@@ -19,7 +19,7 @@ shared_module('nvidia-open_gbm',
   install : true,
   install_dir : gbm_backends_dir)
 
-foreach t : ['gbm-probe', 'gbm-layout']
+foreach t : ['gbm-probe', 'gbm-layout', 'gbm-prime-import']
   executable(t, 'tests' / t + '.c',
     dependencies : [dependency('gbm'), dep_libdrm],
     install : false)
