@@ -9,7 +9,7 @@ tree.
 
 | Directory | Replaces | Status |
 |-----------|----------|--------|
-| `nvidia-gbm/` | `nvidia-drm_gbm.so` (`libnvidia-allocator.so`) | bo_create, bo_import (dma-buf); no map or surfaces yet |
+| `nvidia-gbm/` | `nvidia-drm_gbm.so` (`libnvidia-allocator.so`) | bo_create, bo_import, bo_map, surfaces (via egl-gbm) |
 
 ## Build
 
@@ -40,3 +40,7 @@ handles GBM devices with that backend name.
 - `gbm-import`: import round trips, shared GEM handles, an EGL-exported
   client buffer, AddFB2 of imported buffers (primary node) and invalid
   imports.
+- `gbm-map`: CPU maps checked against GL rendering and sampling, plus an
+  independent detile of a raw mapping.
+- `gbm-surface`: EGL window surfaces on GBM surfaces like a KMS compositor
+  uses them (swap, lock front buffer, AddFB2, release).

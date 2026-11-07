@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
@@ -990,18 +991,79 @@ static void nv_gbm_bo_destroy(struct gbm_bo *_bo)
 
 /* ---- surfaces ------------------------------------------------------------ */
 
+/*
+ * Window surfaces are implemented by libnvidia-egl-gbm, not here. When an EGL
+ * display is initialized on the device it replaces the device's
+ * surface_lock_front_buffer, surface_release_buffer and
+ * surface_has_free_buffers with its own. At eglCreateWindowSurface it reads
+ * the parameters from struct gbm_surface v0 (the modifiers go to eglcore,
+ * which allocates the images), and lock_front_buffer imports each image with
+ * our bo_import(GBM_BO_IMPORT_FD_MODIFIER).
+ *
+ * egl-gbm keeps its surface pointer in the pointer-sized slot right before
+ * the struct gbm_surface the backend returns (GetPrivPtr() in its
+ * gbm-surface.c), as in NVIDIA's own backend. That layout is ABI.
+ */
+struct nv_gbm_surface {
+    void *egl_gbm_priv;   /* owned by libnvidia-egl-gbm */
+    struct gbm_surface base;
+};
+
+_Static_assert(offsetof(struct nv_gbm_surface, base) == sizeof(void *),
+               "libnvidia-egl-gbm expects its pointer right before gbm_surface");
+
+static inline struct nv_gbm_surface *nv_gbm_surface(struct gbm_surface *s)
+{
+    return (struct nv_gbm_surface *)((uint8_t *)s - offsetof(struct nv_gbm_surface, base));
+}
+
 static struct gbm_surface *nv_gbm_surface_create(struct gbm_device *gbm,
                                                  uint32_t width, uint32_t height,
                                                  uint32_t format, uint32_t flags,
                                                  const uint64_t *modifiers,
                                                  const unsigned count)
 {
-    errno = ENOSYS;
-    return NULL;
+    struct nv_gbm_surface *surf;
+
+    format = canonicalize_format(format);
+    if (find_format(format) == NULL || width == 0 || height == 0 ||
+        width > NV_MAX_DIMENSION || height > NV_MAX_DIMENSION ||
+        (count > 0 && modifiers == NULL)) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    surf = calloc(1, sizeof(*surf));
+    if (surf == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+
+    /* Passed on unfiltered: eglcore allocates the images and may know
+     * modifiers we don't; importing them works for any modifier. */
+    if (count > 0) {
+        surf->base.v0.modifiers = calloc(count, sizeof(*modifiers));
+        if (surf->base.v0.modifiers == NULL) {
+            free(surf);
+            errno = ENOMEM;
+            return NULL;
+        }
+        memcpy(surf->base.v0.modifiers, modifiers, count * sizeof(*modifiers));
+        surf->base.v0.count = count;
+    }
+
+    surf->base.gbm = gbm;
+    surf->base.v0.width = width;
+    surf->base.v0.height = height;
+    surf->base.v0.format = format;
+    surf->base.v0.flags = flags;
+    return &surf->base;
 }
 
+/* Used until an EGL display is initialized on the device. */
 static struct gbm_bo *nv_gbm_surface_lock_front_buffer(struct gbm_surface *surface)
 {
+    errno = EINVAL;
     return NULL;
 }
 
@@ -1017,6 +1079,11 @@ static int nv_gbm_surface_has_free_buffers(struct gbm_surface *surface)
 
 static void nv_gbm_surface_destroy(struct gbm_surface *surface)
 {
+    struct nv_gbm_surface *surf = nv_gbm_surface(surface);
+
+    /* egl-gbm's own surface state goes away with the EGLSurface. */
+    free(surf->base.v0.modifiers);
+    free(surf);
 }
 
 /* ---- backend ------------------------------------------------------------- */
