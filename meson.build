@@ -18,3 +18,7 @@ nv_uapi_inc = include_directories('include')
 if get_option('nvidia-gbm').allowed()
   subdir('nvidia-gbm')
 endif
+
+if get_option('nvchan').allowed()
+  subdir('nvchan')
+endif
