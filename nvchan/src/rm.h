@@ -72,6 +72,11 @@ NvU32 nvc_rm_map(struct nvc_rm *rm, NvHandle device, NvHandle memory,
 NvU32 nvc_rm_unmap(struct nvc_rm *rm, NvHandle device, NvHandle memory,
                    void *cpu, NvU32 flags);
 
+/* Binds RM OS events identified by fd to the file fd itself: events posted
+ * to it wake poll() on fd (NV_ESC_ALLOC_OS_EVENT). Returns an NV_STATUS. */
+NvU32 nvc_rm_alloc_os_event(struct nvc_rm *rm, int fd);
+NvU32 nvc_rm_free_os_event(struct nvc_rm *rm, int fd);
+
 NvU32 nvc_rm_map_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
                      NvHandle memory, NvU64 offset, NvU64 length, NvU32 flags,
                      NvU64 *dma_offset);

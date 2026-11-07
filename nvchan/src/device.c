@@ -449,6 +449,7 @@ struct nvchan_channel *nvchan_channel_create_copy(struct nvchan_device *dev,
     }
     ch->dev = dev;
     ch->engine_type = engine;
+    ch->event_fd = -1;
 
     NvPushAllocChannelParams cp = {
         .engineType = engine,

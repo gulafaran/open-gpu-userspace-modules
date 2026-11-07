@@ -44,6 +44,12 @@ struct nvchan_channel {
     struct nvchan_buffer *sema;
     volatile NvU32 *sema_cpu;
     NvU32 sema_payload;
+
+    /* Non-stall interrupt of our copy engine, delivered to event_fd
+     * (poll() for POLLIN); -1 if unavailable, then finish() polls the
+     * semaphore with sleeps. */
+    int event_fd;
+    NvHandle event;
 };
 
 struct nvchan_buffer {

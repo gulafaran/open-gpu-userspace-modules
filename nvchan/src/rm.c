@@ -459,6 +459,22 @@ NvU32 nvc_rm_unmap(struct nvc_rm *rm, NvHandle device, NvHandle memory,
     return ret ? os_status(ret) : p.status;
 }
 
+NvU32 nvc_rm_alloc_os_event(struct nvc_rm *rm, int fd)
+{
+    nv_ioctl_alloc_os_event_t p = { .hClient = rm->client, .fd = (NvU32)fd };
+    int ret = nv_ioctl(fd, NV_ESC_ALLOC_OS_EVENT, &p, sizeof(p));
+
+    return ret ? os_status(ret) : p.Status;
+}
+
+NvU32 nvc_rm_free_os_event(struct nvc_rm *rm, int fd)
+{
+    nv_ioctl_free_os_event_t p = { .hClient = rm->client, .fd = (NvU32)fd };
+    int ret = nv_ioctl(fd, NV_ESC_FREE_OS_EVENT, &p, sizeof(p));
+
+    return ret ? os_status(ret) : p.Status;
+}
+
 NvU32 nvc_rm_map_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
                      NvHandle memory, NvU64 offset, NvU64 length, NvU32 flags,
                      NvU64 *dma_offset)

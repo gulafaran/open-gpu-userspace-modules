@@ -7,7 +7,10 @@
  */
 
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <sched.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -22,7 +25,11 @@
 #include "class/cl0040.h"          /* NV01_MEMORY_LOCAL_USER */
 #include "class/cla06fsubch.h"     /* NVA06F_SUBCHANNEL_COPY_ENGINE */
 #include "class/clc7b5.h"          /* AMPERE_DMA_COPY_B methods */
+#include "class/clc46f.h"          /* host methods (TURING_CHANNEL_GPFIFO_A+) */
 #include "ctrl/ctrl0000/ctrl0000unix.h"  /* IMPORT_OBJECT_FROM_FD */
+#include "ctrl/ctrl2080/ctrl2080event.h" /* EVENT_SET_NOTIFICATION */
+#include "class/cl0005.h"                 /* NV0005_ALLOC_PARAMETERS */
+#include "class/cl2080_notification.h"    /* NV2080_NOTIFIERS_CE */
 
 #define SUBCH NVA06F_SUBCHANNEL_COPY_ENGINE
 
@@ -198,6 +205,76 @@ void *nvchan_buffer_map(struct nvchan_buffer *buf)
 
 /* ---- channel setup ----------------------------------------------------------- */
 
+/*
+ * Wake-ups for nvchan_channel_finish(): an OS event on the host's
+ * NON_STALL_INTERRUPT method, which RM notifies as
+ * NV2080_NOTIFIERS_FIFO_EVENT_MTHD (RM's own copy engine channel in
+ * mem_utils.c waits the same way). The copy engine's own INTERRUPT_TYPE
+ * doesn't reach this notifier or the engine's. Every client's non-stall
+ * interrupts arrive there, so finish() rechecks the semaphore after each
+ * wake-up. Dataless events only set a
+ * pending flag that poll() clears, so nothing queues up and a wake-up
+ * between the semaphore check and poll() is not lost. Optional: without it
+ * finish() polls with sleeps.
+ */
+static void init_events(struct nvchan_channel *ch)
+{
+    struct nvc_rm *rm = &ch->dev->rm;
+    const NvU32 notifier = NV2080_NOTIFIERS_FIFO_EVENT_MTHD;
+
+    ch->event_fd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
+    if (ch->event_fd < 0)
+        return;
+    if (nvc_rm_alloc_os_event(rm, ch->event_fd) != NV_OK)
+        goto fail_close;
+
+    NV0005_ALLOC_PARAMETERS ev = {
+        .hParentClient = rm->client,
+        .hClass = NV01_EVENT_OS_EVENT,
+        .notifyIndex = notifier | NV01_EVENT_NONSTALL_INTR | NV01_EVENT_WITHOUT_EVENT_DATA,
+        .data = NV_PTR_TO_NvP64((NvUPtr)ch->event_fd),
+    };
+    ch->event = nvc_rm_handle(rm);
+    if (nvc_rm_alloc(rm, ch->dev->subdevice, ch->event, NV01_EVENT_OS_EVENT, &ev) != NV_OK)
+        goto fail_os_event;
+
+    NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS arm = {
+        .event = notifier,
+        .action = NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT,
+    };
+    if (nvc_rm_control(rm, ch->dev->subdevice, NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION,
+                       &arm, sizeof(arm)) != NV_OK)
+        goto fail_event;
+    return;
+
+fail_event:
+    nvc_rm_free(rm, ch->dev->subdevice, ch->event);
+fail_os_event:
+    ch->event = 0;
+    nvc_rm_free_os_event(rm, ch->event_fd);
+fail_close:
+    close(ch->event_fd);
+    ch->event_fd = -1;
+}
+
+static void fini_events(struct nvchan_channel *ch)
+{
+    struct nvc_rm *rm = &ch->dev->rm;
+
+    if (ch->event_fd < 0)
+        return;
+    nvc_rm_free(rm, ch->dev->subdevice, ch->event);
+    nvc_rm_free_os_event(rm, ch->event_fd);
+    close(ch->event_fd);
+    ch->event_fd = -1;
+    ch->event = 0;
+}
+
+bool nvchan_channel_has_events(const struct nvchan_channel *ch)
+{
+    return ch->event_fd >= 0;
+}
+
 bool nvc_channel_init_copy(struct nvchan_channel *ch, char *err, size_t err_size)
 {
     ch->sema = nvchan_buffer_create(ch->dev, 4096, NVCHAN_SYSMEM, NVCHAN_PITCH,
@@ -209,11 +286,13 @@ bool nvc_channel_init_copy(struct nvchan_channel *ch, char *err, size_t err_size
     ch->sema_payload = 0;
 
     nvPushSetObject(&ch->push, SUBCH, &ch->copy_object);
+    init_events(ch);
     return true;
 }
 
 void nvc_channel_fini_copy(struct nvchan_channel *ch)
 {
+    fini_events(ch);
     nvchan_buffer_destroy(ch->sema);
     ch->sema = NULL;
     ch->sema_cpu = NULL;
@@ -412,20 +491,34 @@ int nvchan_copy_2d(struct nvchan_channel *ch,
 
 /* ---- completion -------------------------------------------------------------- */
 
-static NvU64 now_ms(void)
+static NvU64 now_us(void)
 {
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (NvU64)ts.tv_sec * 1000 + (NvU64)ts.tv_nsec / 1000000;
+    return (NvU64)ts.tv_sec * 1000000 + (NvU64)ts.tv_nsec / 1000;
 }
+
+static bool sema_reached(const struct nvchan_channel *ch, NvU32 payload)
+{
+    if ((NvS32)(*ch->sema_cpu - payload) >= 0) {
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+        return true;
+    }
+    return false;
+}
+
+/* Spin this long before sleeping: short copies finish within it. */
+#define NVCHAN_SPIN_US 20
 
 int nvchan_channel_finish(struct nvchan_channel *ch, unsigned timeout_ms)
 {
     NvPushChannelPtr p = &ch->push;
     const NvU32 payload = ++ch->sema_payload;
     const NvU64 va = ch->sema->gpu_va;
-    const NvU64 deadline = now_ms() + timeout_ms;
+    const NvU64 start = now_us();
+    const NvU64 deadline = start + (NvU64)timeout_ms * 1000;
+    unsigned sleep_us = 10;
 
     /* After all queued transfers, with a system-wide flush so the CPU
      * sees their writes. */
@@ -440,19 +533,54 @@ int nvchan_channel_finish(struct nvchan_channel *ch, unsigned timeout_ms)
         DRF_DEF(C7B5, _LAUNCH_DMA, _FLUSH_TYPE, _SYS) |
         DRF_DEF(C7B5, _LAUNCH_DMA, _SEMAPHORE_TYPE, _RELEASE_ONE_WORD_SEMAPHORE));
 
+    if (ch->event_fd >= 0) {
+        /*
+         * The host doesn't wait for the copy engine, so a bare
+         * NON_STALL_INTERRUPT could come before the copies are done.
+         * Release the same value once more from the host after waiting for
+         * idle (as nvPushReleaseTimelineSemaphore() does), then interrupt.
+         */
+        nvPushMethod(p, 0, NVC46F_SEM_ADDR_LO, 5);
+        nvPushSetMethodData(p, NvU64_LO32(va));     /* SEM_ADDR_LO */
+        nvPushSetMethodData(p, NvU64_HI32(va));     /* SEM_ADDR_HI */
+        nvPushSetMethodData(p, payload);            /* SEM_PAYLOAD_LO */
+        nvPushSetMethodData(p, 0);                  /* SEM_PAYLOAD_HI */
+        nvPushSetMethodData(p,                      /* SEM_EXECUTE */
+            DRF_DEF(C46F, _SEM_EXECUTE, _OPERATION, _RELEASE) |
+            DRF_DEF(C46F, _SEM_EXECUTE, _RELEASE_WFI, _EN) |
+            DRF_DEF(C46F, _SEM_EXECUTE, _PAYLOAD_SIZE, _32BIT));
+        nvPushMethod(p, 0, NVC46F_NON_STALL_INTERRUPT, 1);
+        nvPushSetMethodData(p, 0);
+    }
+
     nvPushKickoff(p);
 
-    for (unsigned spins = 0;; spins++) {
-        if ((NvS32)(*ch->sema_cpu - payload) >= 0) {
-            __atomic_thread_fence(__ATOMIC_ACQUIRE);
+    while (now_us() - start < NVCHAN_SPIN_US) {
+        if (sema_reached(ch, payload))
             return 0;
-        }
-        if ((spins & 1023) == 1023) {
-            if (nvPushCheckChannelError(p))
-                return -EIO;
-            if (now_ms() > deadline)
-                return -ETIMEDOUT;
-            sched_yield();
+    }
+
+    for (;;) {
+        if (sema_reached(ch, payload))
+            return 0;
+        if (nvPushCheckChannelError(p))
+            return -EIO;
+
+        NvU64 now = now_us();
+        if (now >= deadline)
+            return sema_reached(ch, payload) ? 0 : -ETIMEDOUT;
+
+        if (ch->event_fd >= 0) {
+            /* Wakes on our engine's interrupt; at least every 100 ms to
+             * notice channel errors, which come without one. */
+            NvU64 left_ms = (deadline - now + 999) / 1000;
+            struct pollfd pfd = { .fd = ch->event_fd, .events = POLLIN };
+            poll(&pfd, 1, left_ms > 100 ? 100 : (int)left_ms);
+        } else {
+            struct timespec ts = { 0, (long)sleep_us * 1000 };
+            nanosleep(&ts, NULL);
+            if (sleep_us < 1000)
+                sleep_us *= 2;
         }
     }
 }

@@ -39,6 +39,13 @@ static double now(void)
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
+static double cpu_now(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
 static uint32_t pattern(uint64_t i)
 {
     uint64_t x = i * 0x9e3779b97f4a7c15ull;
@@ -234,11 +241,17 @@ static void test_throughput(struct nvchan_device *dev, struct nvchan_channel *ch
     if (a && b && s) {
         nvchan_copy(ch, b, 0, a, 0, size);   /* warm up */
         finish(ch, "warm up");
-        double t = now();
+        double t = now(), c = cpu_now();
         for (int i = 0; i < 4; i++)
             nvchan_copy(ch, b, 0, a, 0, size);
-        if (finish(ch, "vid->vid") == 0)
-            printf("  info  video -> video: %.1f GB/s\n", 4 * size / (now() - t) / 1e9);
+        if (finish(ch, "vid->vid") == 0) {
+            double wall = now() - t, cpu = cpu_now() - c;
+            printf("  info  video -> video: %.1f GB/s\n", 4 * size / wall / 1e9);
+            printf("  info  waiting: %.1f ms wall, %.1f ms CPU (%.0f %%)\n",
+                   wall * 1e3, cpu * 1e3, 100 * cpu / wall);
+            if (nvchan_channel_has_events(ch))
+                CHECK(cpu < wall * 0.5, "finish() sleeps instead of spinning");
+        }
         t = now();
         nvchan_copy(ch, a, 0, s, 0, size);
         if (finish(ch, "sys->vid") == 0)
@@ -251,6 +264,25 @@ static void test_throughput(struct nvchan_device *dev, struct nvchan_channel *ch
     nvchan_buffer_destroy(a);
     nvchan_buffer_destroy(b);
     nvchan_buffer_destroy(s);
+}
+
+static void test_latency(struct nvchan_device *dev, struct nvchan_channel *ch)
+{
+    printf("small operations\n");
+    struct nvchan_buffer *b = buffer(dev, 65536, NVCHAN_VIDMEM, NVCHAN_PITCH);
+    if (b == NULL)
+        return;
+    const int n = 2000;
+    double t = now(), c = cpu_now();
+    int ret = 0;
+    for (int i = 0; i < n && ret == 0; i++) {
+        nvchan_fill32(ch, b, 0, 4096, (uint32_t)i);
+        ret = nvchan_channel_finish(ch, 5000);
+    }
+    double wall = now() - t, cpu = cpu_now() - c;
+    CHECK(ret == 0, "%d fill + finish rounds", n);
+    printf("  info  %.1f us per round, %.0f %% CPU\n", wall * 1e6 / n, 100 * cpu / wall);
+    nvchan_buffer_destroy(b);
 }
 
 int main(int argc, char **argv)
@@ -269,7 +301,9 @@ int main(int argc, char **argv)
         nvchan_device_close(dev);
         return 1;
     }
-    printf("%s, copy class 0x%04x\n", nvchan_device_name(dev), nvchan_device_copy_class(dev));
+    printf("%s, copy class 0x%04x, completion: %s\n", nvchan_device_name(dev),
+           nvchan_device_copy_class(dev),
+           nvchan_channel_has_events(ch) ? "interrupt events" : "polling");
 
     printf("argument checks\n");
     {
@@ -289,6 +323,7 @@ int main(int argc, char **argv)
     test_block_linear(dev, ch, 300, 200, 0);
     test_block_linear(dev, ch, 300, 200, 5);
     test_throughput(dev, ch);
+    test_latency(dev, ch);
 
     printf("\n%d failure(s)\n", failures);
     nvchan_channel_destroy(ch);

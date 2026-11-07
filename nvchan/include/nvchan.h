@@ -126,6 +126,10 @@ int nvchan_copy_2d(struct nvchan_channel *ch,
                     const struct nvchan_surface *src, uint32_t src_x_bytes, uint32_t src_y,
                     uint32_t width_bytes, uint32_t height);
 
+/* Whether nvchan_channel_finish() sleeps on the copy engine's interrupt
+ * (otherwise it polls the semaphore with growing sleeps). */
+bool nvchan_channel_has_events(const struct nvchan_channel *ch);
+
 /* Submits the queued work and waits up to timeout_ms. Returns 0, -ETIMEDOUT,
  * or -EIO if the channel reported an error; the channel is unusable then
  * (RM has torn it down) and must be destroyed. */
