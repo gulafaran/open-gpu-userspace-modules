@@ -16,16 +16,24 @@
  *                 rows   = height
  *   planes start and the BO ends on a 64 KiB boundary.
  *
+ * GEM handles are per DRM file and not reference counted: importing a
+ * dma-buf whose object already has a handle on this fd (one of our own BOs,
+ * or the same client buffer twice) returns that same handle, and closing it
+ * once invalidates it for everyone. The device therefore counts references
+ * to each handle and only closes it when the last BO using it goes away.
+ *
  * Every gbm_device_v0 entry point must be non-NULL because the loader calls
  * them without checking.
  */
 
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <xf86drm.h>
 #include <drm_fourcc.h>
@@ -85,21 +93,34 @@ static const struct nv_gbm_format nv_gbm_formats[] = {
     { DRM_FORMAT_NV12,          2, { 1, 2 }, 2, 2, true },
 };
 
+struct nv_gbm_handle_ref {
+    uint32_t handle;
+    uint32_t refs;
+};
+
 struct nv_gbm_device {
     struct gbm_device base;
     struct drm_nvidia_get_dev_info_params info;
     bool compression;   /* we know the compressed kind for this generation */
     bool linear_render; /* the renderer can render to linear, see linear_allowed() */
+
+    /* Protects the handle table, and spans getting a handle from the kernel
+     * (import) or closing it, so a handle number can't be reused in between. */
+    pthread_mutex_t lock;
+    struct nv_gbm_handle_ref *refs;
+    unsigned num_refs, max_refs;
 };
 
 struct nv_gbm_bo {
     struct gbm_bo base;
-    uint32_t handle;
     uint64_t modifier;
     uint64_t size;
-    const struct nv_gbm_format *fmt;
-    uint32_t stride[NV_GBM_MAX_PLANES];
-    uint32_t offset[NV_GBM_MAX_PLANES];
+    const struct nv_gbm_format *fmt;  /* NULL for imports of unknown formats */
+    unsigned num_planes;
+    /* One reference in the device's handle table per plane. */
+    uint32_t handle[GBM_MAX_PLANES];
+    uint32_t stride[GBM_MAX_PLANES];
+    uint32_t offset[GBM_MAX_PLANES];
 };
 
 static const struct gbm_core *core;
@@ -112,6 +133,49 @@ static inline struct nv_gbm_device *nv_gbm_device(struct gbm_device *gbm)
 static inline struct nv_gbm_bo *nv_gbm_bo(struct gbm_bo *bo)
 {
     return (struct nv_gbm_bo *)bo;
+}
+
+/* ---- GEM handle references (dev->lock held) -------------------------------- */
+
+static int handle_ref(struct nv_gbm_device *dev, uint32_t handle)
+{
+    for (unsigned i = 0; i < dev->num_refs; i++) {
+        if (dev->refs[i].handle == handle) {
+            dev->refs[i].refs++;
+            return 0;
+        }
+    }
+
+    if (dev->num_refs == dev->max_refs) {
+        unsigned max = dev->max_refs ? dev->max_refs * 2 : 64;
+        struct nv_gbm_handle_ref *refs = realloc(dev->refs, max * sizeof(*refs));
+        if (refs == NULL)
+            return -ENOMEM;
+        dev->refs = refs;
+        dev->max_refs = max;
+    }
+    dev->refs[dev->num_refs++] = (struct nv_gbm_handle_ref){ handle, 1 };
+    return 0;
+}
+
+static void handle_unref(struct nv_gbm_device *dev, uint32_t handle)
+{
+    for (unsigned i = 0; i < dev->num_refs; i++) {
+        if (dev->refs[i].handle != handle)
+            continue;
+        if (--dev->refs[i].refs == 0) {
+            dev->refs[i] = dev->refs[--dev->num_refs];
+            drmCloseBufferHandle(dev->base.v0.fd, handle);
+        }
+        return;
+    }
+}
+
+static void bo_unref_handles(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
+                             unsigned num)
+{
+    for (unsigned p = 0; p < num; p++)
+        handle_unref(dev, bo->handle[p]);
 }
 
 static uint32_t canonicalize_format(uint32_t format)
@@ -272,7 +336,12 @@ static bool choose_modifier(const struct nv_gbm_device *dev,
 
 static void nv_gbm_destroy(struct gbm_device *gbm)
 {
-    free(nv_gbm_device(gbm));
+    struct nv_gbm_device *dev = nv_gbm_device(gbm);
+
+    /* Handles still referenced belong to leaked BOs; the fd owns them. */
+    pthread_mutex_destroy(&dev->lock);
+    free(dev->refs);
+    free(dev);
 }
 
 static int nv_gbm_is_format_supported(struct gbm_device *gbm,
@@ -312,6 +381,7 @@ static bool compute_layout(struct nv_gbm_bo *bo, uint32_t width, uint32_t height
     const uint32_t row_align = linear ? 1 : NV_GOB_HEIGHT_ROWS << NV_MOD_H(bo->modifier);
     uint64_t end = 0;
 
+    bo->num_planes = fmt->num_planes;
     for (unsigned p = 0; p < fmt->num_planes; p++) {
         uint32_t pw = p ? DIV_ROUND_UP(width, fmt->hsub) : width;
         uint32_t ph = p ? DIV_ROUND_UP(height, fmt->vsub) : height;
@@ -333,6 +403,7 @@ static bool compute_layout(struct nv_gbm_bo *bo, uint32_t width, uint32_t height
     return true;
 }
 
+/* Allocates the memory and takes the plane references on its handle. */
 static int alloc_gem(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
                      bool scanout, bool *compressed)
 {
@@ -346,8 +417,22 @@ static int alloc_gem(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
     if (drmIoctl(dev->base.v0.fd, DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY, &p) != 0)
         return -errno;
 
-    bo->handle = p.handle;
     *compressed = p.compressible != 0;
+
+    pthread_mutex_lock(&dev->lock);
+    for (unsigned i = 0; i < bo->num_planes; i++) {
+        int ret = handle_ref(dev, p.handle);
+        if (ret != 0) {
+            if (i == 0)
+                drmCloseBufferHandle(dev->base.v0.fd, p.handle);
+            else
+                bo_unref_handles(dev, bo, i);
+            pthread_mutex_unlock(&dev->lock);
+            return ret;
+        }
+        bo->handle[i] = p.handle;
+    }
+    pthread_mutex_unlock(&dev->lock);
     return 0;
 }
 
@@ -443,7 +528,9 @@ static struct gbm_bo *nv_gbm_bo_create(struct gbm_device *gbm,
         for (unsigned i = 0; i < count && !ok; i++)
             ok = modifiers[i] == plain;
         if (!ok) {
-            drmCloseBufferHandle(gbm->v0.fd, bo->handle);
+            pthread_mutex_lock(&dev->lock);
+            bo_unref_handles(dev, bo, bo->num_planes);
+            pthread_mutex_unlock(&dev->lock);
             free(bo);
             errno = ENOMEM;
             return NULL;
@@ -456,15 +543,167 @@ static struct gbm_bo *nv_gbm_bo_create(struct gbm_device *gbm,
     bo->base.v0.height = height;
     bo->base.v0.stride = bo->stride[0];
     bo->base.v0.format = format;
-    bo->base.v0.handle.u32 = bo->handle;
+    bo->base.v0.handle.u32 = bo->handle[0];
     return &bo->base;
+}
+
+/*
+ * Rejects plane layouts that don't fit in their dma-buf, so a bad client
+ * buffer fails here instead of faulting the GPU or the display later. Only
+ * checked for formats and modifiers whose layout we know.
+ */
+static bool import_fits(const struct nv_gbm_format *fmt, uint64_t modifier,
+                        uint32_t width, uint32_t height,
+                        const int *fds, const int *strides, const int *offsets)
+{
+    uint32_t row_align;
+
+    if (fmt == NULL)
+        return true;
+    if (modifier == DRM_FORMAT_MOD_LINEAR)
+        row_align = 1;
+    else if (is_nv_block_linear(modifier) && NV_MOD_H(modifier) <= NV_MAX_LOG2_GOBS)
+        row_align = NV_GOB_HEIGHT_ROWS << NV_MOD_H(modifier);
+    else
+        return true;
+
+    for (unsigned p = 0; p < fmt->num_planes; p++) {
+        uint32_t pw = p ? DIV_ROUND_UP(width, fmt->hsub) : width;
+        uint32_t ph = p ? DIV_ROUND_UP(height, fmt->vsub) : height;
+        off_t size = lseek(fds[p], 0, SEEK_END);
+
+        if ((uint64_t)strides[p] < (uint64_t)pw * fmt->cpp[p])
+            return false;
+        if (row_align > 1 && strides[p] % NV_GOB_WIDTH_BYTES != 0)
+            return false;
+        if (size < 0)
+            continue;   /* not seekable: can't tell */
+
+        /* The last row of a linear plane only needs its pixels. */
+        uint64_t need = row_align > 1 ?
+            (uint64_t)strides[p] * ALIGN((uint64_t)ph, row_align) :
+            (uint64_t)strides[p] * (ph - 1) + (uint64_t)pw * fmt->cpp[p];
+        if ((uint64_t)offsets[p] + need > (uint64_t)size)
+            return false;
+    }
+    return true;
 }
 
 static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
                                        void *buffer, uint32_t usage)
 {
-    errno = ENOSYS;
-    return NULL;
+    struct nv_gbm_device *dev = nv_gbm_device(gbm);
+    uint32_t width, height, format, num_fds;
+    int fds[GBM_MAX_PLANES], strides[GBM_MAX_PLANES], offsets[GBM_MAX_PLANES];
+    uint64_t modifier;
+
+    switch (type) {
+    case GBM_BO_IMPORT_FD: {
+        const struct gbm_import_fd_data *d = buffer;
+
+        width = d->width;
+        height = d->height;
+        format = d->format;
+        num_fds = 1;
+        fds[0] = d->fd;
+        strides[0] = (int)d->stride;
+        offsets[0] = 0;
+        /* The importer has to know the layout some other way, as with
+         * Mesa's backend. */
+        modifier = DRM_FORMAT_MOD_INVALID;
+        break;
+    }
+    case GBM_BO_IMPORT_FD_MODIFIER: {
+        const struct gbm_import_fd_modifier_data *d = buffer;
+
+        width = d->width;
+        height = d->height;
+        format = d->format;
+        num_fds = d->num_fds;
+        if (num_fds == 0 || num_fds > GBM_MAX_PLANES) {
+            errno = EINVAL;
+            return NULL;
+        }
+        memcpy(fds, d->fds, sizeof(fds));
+        memcpy(strides, d->strides, sizeof(strides));
+        memcpy(offsets, d->offsets, sizeof(offsets));
+        modifier = d->modifier;
+        break;
+    }
+    default:
+        /* No wl_drm on NVIDIA; EGLImages would need the EGL display. */
+        errno = ENOSYS;
+        return NULL;
+    }
+
+    format = canonicalize_format(format);
+    const struct nv_gbm_format *fmt = find_format(format);
+
+    /* One fd per plane, as GBM callers pass them (repeated for a single
+     * dma-buf). */
+    if (width == 0 || height == 0 ||
+        width > NV_MAX_DIMENSION || height > NV_MAX_DIMENSION ||
+        (fmt != NULL && num_fds != fmt->num_planes)) {
+        errno = EINVAL;
+        return NULL;
+    }
+    for (unsigned p = 0; p < num_fds; p++) {
+        if (fds[p] < 0 || strides[p] <= 0 || offsets[p] < 0) {
+            errno = EINVAL;
+            return NULL;
+        }
+    }
+    if (!import_fits(fmt, modifier, width, height, fds, strides, offsets)) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    struct nv_gbm_bo *bo = calloc(1, sizeof(*bo));
+    if (bo == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    bo->fmt = fmt;
+    bo->modifier = modifier;
+    bo->num_planes = num_fds;
+    off_t size = lseek(fds[0], 0, SEEK_END);
+    bo->size = size > 0 ? (uint64_t)size : 0;
+
+    pthread_mutex_lock(&dev->lock);
+    for (unsigned p = 0; p < num_fds; p++) {
+        uint32_t handle = 0;
+        const bool got = drmPrimeFDToHandle(gbm->v0.fd, fds[p], &handle) == 0;
+        int ret = got ? handle_ref(dev, handle) : -errno;
+
+        if (ret != 0) {
+            /* A handle we got but couldn't count is ours to drop only if
+             * nobody else holds it. */
+            if (got) {
+                bool known = false;
+                for (unsigned i = 0; i < dev->num_refs && !known; i++)
+                    known = dev->refs[i].handle == handle;
+                if (!known)
+                    drmCloseBufferHandle(gbm->v0.fd, handle);
+            }
+            bo_unref_handles(dev, bo, p);
+            pthread_mutex_unlock(&dev->lock);
+            free(bo);
+            errno = -ret;
+            return NULL;
+        }
+        bo->handle[p] = handle;
+        bo->stride[p] = (uint32_t)strides[p];
+        bo->offset[p] = (uint32_t)offsets[p];
+    }
+    pthread_mutex_unlock(&dev->lock);
+
+    bo->base.gbm = gbm;
+    bo->base.v0.width = width;
+    bo->base.v0.height = height;
+    bo->base.v0.stride = bo->stride[0];
+    bo->base.v0.format = format;
+    bo->base.v0.handle.u32 = bo->handle[0];
+    return &bo->base;
 }
 
 static void *nv_gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y,
@@ -485,19 +724,31 @@ static int nv_gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t data)
     return -1;
 }
 
-static int nv_gbm_bo_get_fd(struct gbm_bo *_bo)
+static bool valid_plane(const struct nv_gbm_bo *bo, int plane)
 {
-    struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
+    if (plane >= 0 && (unsigned)plane < bo->num_planes)
+        return true;
+    errno = EINVAL;
+    return false;
+}
+
+static int export_handle(struct gbm_bo *_bo, uint32_t handle)
+{
     int fd;
 
-    if (drmPrimeHandleToFD(_bo->gbm->v0.fd, bo->handle, DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
+    if (drmPrimeHandleToFD(_bo->gbm->v0.fd, handle, DRM_CLOEXEC | DRM_RDWR, &fd) != 0)
         return -1;
     return fd;
 }
 
+static int nv_gbm_bo_get_fd(struct gbm_bo *_bo)
+{
+    return export_handle(_bo, nv_gbm_bo(_bo)->handle[0]);
+}
+
 static int nv_gbm_bo_get_planes(struct gbm_bo *bo)
 {
-    return nv_gbm_bo(bo)->fmt->num_planes;
+    return (int)nv_gbm_bo(bo)->num_planes;
 }
 
 static union gbm_bo_handle nv_gbm_bo_get_handle(struct gbm_bo *_bo, int plane)
@@ -505,40 +756,30 @@ static union gbm_bo_handle nv_gbm_bo_get_handle(struct gbm_bo *_bo, int plane)
     struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
     union gbm_bo_handle h = { .s64 = -1 };
 
-    if (plane >= 0 && plane < bo->fmt->num_planes)
-        h.u32 = bo->handle;
-    else
-        errno = EINVAL;
+    if (valid_plane(bo, plane))
+        h.u32 = bo->handle[plane];
     return h;
 }
 
 static int nv_gbm_bo_get_plane_fd(struct gbm_bo *_bo, int plane)
 {
-    if (plane < 0 || plane >= nv_gbm_bo(_bo)->fmt->num_planes) {
-        errno = EINVAL;
-        return -1;
-    }
-    return nv_gbm_bo_get_fd(_bo);
+    struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
+
+    return valid_plane(bo, plane) ? export_handle(_bo, bo->handle[plane]) : -1;
 }
 
 static uint32_t nv_gbm_bo_get_stride(struct gbm_bo *_bo, int plane)
 {
     struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
 
-    if (plane < 0 || plane >= bo->fmt->num_planes) {
-        errno = EINVAL;
-        return 0;
-    }
-    return bo->stride[plane];
+    return valid_plane(bo, plane) ? bo->stride[plane] : 0;
 }
 
 static uint32_t nv_gbm_bo_get_offset(struct gbm_bo *_bo, int plane)
 {
     struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
 
-    if (plane < 0 || plane >= bo->fmt->num_planes)
-        return 0;
-    return bo->offset[plane];
+    return valid_plane(bo, plane) ? bo->offset[plane] : 0;
 }
 
 static uint64_t nv_gbm_bo_get_modifier(struct gbm_bo *bo)
@@ -550,8 +791,12 @@ static void nv_gbm_bo_destroy(struct gbm_bo *_bo)
 {
     struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
 
+    struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
+
     /* The loader has already called destroy_user_data. */
-    drmCloseBufferHandle(_bo->gbm->v0.fd, bo->handle);
+    pthread_mutex_lock(&dev->lock);
+    bo_unref_handles(dev, bo, bo->num_planes);
+    pthread_mutex_unlock(&dev->lock);
     free(bo);
 }
 
@@ -625,6 +870,7 @@ static struct gbm_device *nv_gbm_create_device(int fd, uint32_t gbm_backend_vers
         return NULL;
     }
     dev->compression = dev->info.page_kind_generation == 2;
+    pthread_mutex_init(&dev->lock, NULL);
     /* Off while NVIDIA's closed GL is the renderer. NV_GBM_LINEAR_RENDER=1
      * turns it on for a renderer that supports it. */
     const char *env = getenv("NV_GBM_LINEAR_RENDER");

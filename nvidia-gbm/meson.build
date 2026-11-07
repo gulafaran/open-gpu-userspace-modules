@@ -15,7 +15,7 @@ shared_module('nvidia-open_gbm',
   'src/nvidia_gbm.c',
   name_prefix : '',
   include_directories : nv_uapi_inc,
-  dependencies : [dep_libdrm, dep_gbm_headers],
+  dependencies : [dep_libdrm, dep_gbm_headers, dependency('threads')],
   install : true,
   install_dir : gbm_backends_dir)
 
@@ -28,6 +28,9 @@ endforeach
 dep_egl = dependency('egl', required : false)
 dep_glesv2 = dependency('glesv2', required : false)
 if dep_egl.found() and dep_glesv2.found()
+  executable('gbm-import', 'tests/gbm-import.c',
+    dependencies : [dependency('gbm'), dep_libdrm, dep_egl, dep_glesv2],
+    install : false)
   executable('gbm-egl', 'tests/gbm-egl.c',
     include_directories : nv_uapi_inc,
     dependencies : [dependency('gbm'), dep_libdrm, dep_egl, dep_glesv2],
