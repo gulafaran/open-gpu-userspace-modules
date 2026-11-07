@@ -1,0 +1,2 @@
+option('nvidia-gbm', type : 'feature', value : 'enabled',
+       description : 'GBM backend for nvidia-drm')
