@@ -16,8 +16,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 
-#include "nvchan.h"
-#include "rm.h"
+#include "nvchan-priv.h"
 
 #include "nvidia-push-init.h"
 #include "nvidia-push-utils.h"
@@ -42,39 +41,7 @@
 #include "alloc/alloc_channel.h"
 #include "nvos.h"
 
-struct nvchan_device {
-    struct nvc_rm rm;
-
-    NvU32 gpu_id;
-    NvU32 device_instance;
-    NvHandle device;
-    NvHandle subdevice;
-    NvHandle va_space;      /* NV01_MEMORY_VIRTUAL, ctxDma for MapMemoryDma */
-    NvU32 push_handles[NV_PUSH_DEVICE_HANDLE_POOL_NUM];
-    bool push_device_allocated;
-
-    NvU32 classes[NV0080_CTRL_GPU_CLASSLIST_MAX_SIZE];
-    unsigned num_classes;
-    NvU32 engines[NV2080_GPU_MAX_ENGINES_LIST_SIZE];
-    unsigned num_engines;
-    NvU32 copy_class;
-
-    char name[NV2080_GPU_MAX_NAME_STRING_LENGTH];
-
-    NvPushDeviceRec push;
-};
-
-struct nvchan_channel {
-    struct nvchan_device *dev;
-    NvPushChannelRec push;
-    NvU32 engine_type;
-    NvHandle copy_object;
-};
-
-static void set_err(char *err, size_t size, const char *fmt, ...)
-    __attribute__((format(printf, 3, 4)));
-
-static void set_err(char *err, size_t size, const char *fmt, ...)
+void nvc_set_err(char *err, size_t size, const char *fmt, ...)
 {
     va_list ap;
 
@@ -256,17 +223,17 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     int ret;
 
     if (dev == NULL) {
-        set_err(err, err_size, "out of memory");
+        nvc_set_err(err, err_size, "out of memory");
         return NULL;
     }
 
     ret = nvc_rm_open(&dev->rm);
     if (ret == -EPROTO) {
-        set_err(err, err_size, "nvidia.ko is %s, nvchan was built for another version",
+        nvc_set_err(err, err_size, "nvidia.ko is %s, nvchan was built for another version",
                 dev->rm.version);
         goto fail_free;
     } else if (ret != 0) {
-        set_err(err, err_size, "opening the RM client failed: %s", strerror(-ret));
+        nvc_set_err(err, err_size, "opening the RM client failed: %s", strerror(-ret));
         goto fail_free;
     }
 
@@ -274,7 +241,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     if (ret == 0)
         ret = gpu_id_for_minor(&dev->rm, minor, &dev->gpu_id);
     if (ret != 0) {
-        set_err(err, err_size, "opening /dev/nvidia%d failed: %s", minor, strerror(-ret));
+        nvc_set_err(err, err_size, "opening /dev/nvidia%d failed: %s", minor, strerror(-ret));
         goto fail;
     }
 
@@ -282,7 +249,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_control(&dev->rm, dev->rm.client, NV0000_CTRL_CMD_GPU_GET_ID_INFO_V2,
                         &id, sizeof(id));
     if (st != NV_OK) {
-        set_err(err, err_size, "GPU id 0x%x: %s", dev->gpu_id, nvstatusToString(st));
+        nvc_set_err(err, err_size, "GPU id 0x%x: %s", dev->gpu_id, nvstatusToString(st));
         goto fail;
     }
     dev->device_instance = id.deviceInstance;
@@ -296,7 +263,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_alloc(&dev->rm, dev->rm.client, dev->device, NV01_DEVICE_0, &dev_params);
     if (st != NV_OK) {
         dev->device = 0;
-        set_err(err, err_size, "NV01_DEVICE_0: %s", nvstatusToString(st));
+        nvc_set_err(err, err_size, "NV01_DEVICE_0: %s", nvstatusToString(st));
         goto fail;
     }
 
@@ -305,7 +272,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_alloc(&dev->rm, dev->device, dev->subdevice, NV20_SUBDEVICE_0, &sub_params);
     if (st != NV_OK) {
         dev->subdevice = 0;
-        set_err(err, err_size, "NV20_SUBDEVICE_0: %s", nvstatusToString(st));
+        nvc_set_err(err, err_size, "NV20_SUBDEVICE_0: %s", nvstatusToString(st));
         goto fail;
     }
 
@@ -320,7 +287,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_control(&dev->rm, dev->device, NV0080_CTRL_CMD_GPU_GET_CLASSLIST_V2,
                         &classes, sizeof(classes));
     if (st != NV_OK) {
-        set_err(err, err_size, "class list: %s", nvstatusToString(st));
+        nvc_set_err(err, err_size, "class list: %s", nvstatusToString(st));
         goto fail;
     }
     dev->num_classes = classes.numClasses;
@@ -330,7 +297,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_control(&dev->rm, dev->subdevice, NV2080_CTRL_CMD_GPU_GET_ENGINES_V2,
                         &engines, sizeof(engines));
     if (st != NV_OK) {
-        set_err(err, err_size, "engine list: %s", nvstatusToString(st));
+        nvc_set_err(err, err_size, "engine list: %s", nvstatusToString(st));
         goto fail;
     }
     dev->num_engines = engines.engineCount;
@@ -342,7 +309,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     st = nvc_rm_alloc(&dev->rm, dev->device, dev->va_space, NV01_MEMORY_VIRTUAL, &va);
     if (st != NV_OK) {
         dev->va_space = 0;
-        set_err(err, err_size, "NV01_MEMORY_VIRTUAL: %s", nvstatusToString(st));
+        nvc_set_err(err, err_size, "NV01_MEMORY_VIRTUAL: %s", nvstatusToString(st));
         goto fail;
     }
 
@@ -363,7 +330,7 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
     for (unsigned i = 0; i < NV_PUSH_DEVICE_HANDLE_POOL_NUM; i++)
         pp.handlePool[i] = dev->push_handles[i] = nvc_rm_handle(&dev->rm);
     if (!nvPushAllocDevice(&pp, &dev->push)) {
-        set_err(err, err_size, "nvPushAllocDevice failed (see stderr)");
+        nvc_set_err(err, err_size, "nvPushAllocDevice failed (see stderr)");
         goto fail;
     }
     dev->push_device_allocated = true;
@@ -443,20 +410,20 @@ struct nvchan_channel *nvchan_channel_create_copy(struct nvchan_device *dev,
     NvU32 st;
 
     if (dev->copy_class == 0) {
-        set_err(err, err_size, "no supported copy engine class");
+        nvc_set_err(err, err_size, "no supported copy engine class");
         return NULL;
     }
     for (unsigned i = 0; i < dev->num_engines && engine == 0; i++)
         if (NV2080_ENGINE_TYPE_IS_COPY(dev->engines[i]))
             engine = dev->engines[i];
     if (engine == 0) {
-        set_err(err, err_size, "no copy engine");
+        nvc_set_err(err, err_size, "no copy engine");
         return NULL;
     }
 
     ch = calloc(1, sizeof(*ch));
     if (ch == NULL) {
-        set_err(err, err_size, "out of memory");
+        nvc_set_err(err, err_size, "out of memory");
         return NULL;
     }
     ch->dev = dev;
@@ -473,7 +440,7 @@ struct nvchan_channel *nvchan_channel_create_copy(struct nvchan_device *dev,
 
     /* Also submits a test push buffer and waits for it. */
     if (!nvPushAllocChannel(&cp, &ch->push)) {
-        set_err(err, err_size, "nvPushAllocChannel failed (see stderr)");
+        nvc_set_err(err, err_size, "nvPushAllocChannel failed (see stderr)");
         free(ch);
         return NULL;
     }
@@ -486,9 +453,13 @@ struct nvchan_channel *nvchan_channel_create_copy(struct nvchan_device *dev,
     st = nvc_rm_alloc(&dev->rm, ch->push.channelHandle[0], ch->copy_object,
                       dev->copy_class, &ce);
     if (st != NV_OK) {
-        set_err(err, err_size, "copy engine object 0x%04x: %s", dev->copy_class,
+        nvc_set_err(err, err_size, "copy engine object 0x%04x: %s", dev->copy_class,
                 nvstatusToString(st));
         ch->copy_object = 0;
+        nvchan_channel_destroy(ch);
+        return NULL;
+    }
+    if (!nvc_channel_init_copy(ch, err, err_size)) {
         nvchan_channel_destroy(ch);
         return NULL;
     }
@@ -499,6 +470,7 @@ void nvchan_channel_destroy(struct nvchan_channel *ch)
 {
     if (ch == NULL)
         return;
+    nvc_channel_fini_copy(ch);
     if (ch->copy_object)
         nvc_rm_free(&ch->dev->rm, ch->push.channelHandle[0], ch->copy_object);
     nvPushFreeChannel(&ch->push);

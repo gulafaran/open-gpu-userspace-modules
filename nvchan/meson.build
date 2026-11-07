@@ -37,6 +37,7 @@ nvidia_push = static_library('nvidia-push',
 libnvchan = static_library('nvchan',
   'src/rm.c',
   'src/device.c',
+  'src/ce.c',
   include_directories : [nvchan_kernel_inc, include_directories('include')],
   c_args : nvchan_c_args,
   link_with : nvidia_push,
@@ -48,6 +49,8 @@ nvchan_dep = declare_dependency(
   link_with : libnvchan,
   dependencies : dependency('threads'))
 
-executable('nvchan-info', 'tests/nvchan-info.c',
-  dependencies : nvchan_dep,
-  install : false)
+foreach t : ['nvchan-info', 'nvchan-copy']
+  executable(t, 'tests' / t + '.c',
+    dependencies : nvchan_dep,
+    install : false)
+endforeach
