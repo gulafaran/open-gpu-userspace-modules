@@ -19,7 +19,17 @@ shared_module('nvidia-open_gbm',
   install : true,
   install_dir : gbm_backends_dir)
 
-executable('gbm-probe',
-  'tests/gbm-probe.c',
-  dependencies : [dependency('gbm'), dep_libdrm],
-  install : false)
+foreach t : ['gbm-probe', 'gbm-layout']
+  executable(t, 'tests' / t + '.c',
+    dependencies : [dependency('gbm'), dep_libdrm],
+    install : false)
+endforeach
+
+dep_egl = dependency('egl', required : false)
+dep_glesv2 = dependency('glesv2', required : false)
+if dep_egl.found() and dep_glesv2.found()
+  executable('gbm-egl', 'tests/gbm-egl.c',
+    include_directories : nv_uapi_inc,
+    dependencies : [dependency('gbm'), dep_libdrm, dep_egl, dep_glesv2],
+    install : false)
+endif

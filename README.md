@@ -9,7 +9,7 @@ tree.
 
 | Directory | Replaces | Status |
 |-----------|----------|--------|
-| `nvidia-gbm/` | `nvidia-drm_gbm.so` (`libnvidia-allocator.so`) | skeleton |
+| `nvidia-gbm/` | `nvidia-drm_gbm.so` (`libnvidia-allocator.so`) | bo_create; no import, map or surfaces yet |
 
 ## Build
 
@@ -29,3 +29,11 @@ EGL/GL keep loading `libnvidia-allocator.so.1` by name, so they are not affected
 
 The backend reports the name `nvidia` because `libnvidia-egl-gbm` only
 handles GBM devices with that backend name.
+
+### Tests
+
+- `gbm-layout`: prints the modifier, strides, offsets and dma-buf size for a
+  matrix of sizes, formats, usages and modifier lists. Run it with both
+  backends and diff the output.
+- `gbm-egl`: creates an EGL display on the GBM device, imports every BO as
+  a dma-buf, renders into it and reads it back.
