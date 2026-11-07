@@ -184,18 +184,23 @@ static const NvPushImports nvchan_push_imports = {
 
 /* ---- device ---------------------------------------------------------------- */
 
-/* The RM GPU id of /dev/nvidia<minor>, from the card list. */
-static int gpu_id_for_minor(struct nvc_rm *rm, int minor, NvU32 *gpu_id)
+/* Looks up a card by minor (minor >= 0) or by RM GPU id, from the card
+ * list of the control device. */
+static int find_card(int ctl_fd, int *minor, NvU32 *gpu_id)
 {
     nv_ioctl_card_info_t cards[32];
     unsigned long cmd = _IOC(_IOC_READ | _IOC_WRITE, NV_IOCTL_MAGIC,
                              NV_ESC_CARD_INFO, sizeof(cards));
 
     memset(cards, 0, sizeof(cards));
-    if (ioctl(rm->ctl_fd, cmd, cards) < 0)
+    if (ioctl(ctl_fd, cmd, cards) < 0)
         return -errno;
     for (unsigned i = 0; i < 32; i++) {
-        if (cards[i].valid && (int)cards[i].minor_number == minor) {
+        if (!cards[i].valid)
+            continue;
+        if ((*minor >= 0 && (int)cards[i].minor_number == *minor) ||
+            (*minor < 0 && cards[i].gpu_id == *gpu_id)) {
+            *minor = (int)cards[i].minor_number;
             *gpu_id = cards[i].gpu_id;
             return 0;
         }
@@ -216,7 +221,8 @@ static NvU32 choose_copy_class(const struct nvchan_device *dev)
     return 0;
 }
 
-struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
+static struct nvchan_device *device_open(int minor, NvU32 gpu_id,
+                                         char *err, size_t err_size)
 {
     struct nvchan_device *dev = calloc(1, sizeof(*dev));
     NvU32 st;
@@ -237,11 +243,15 @@ struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
         goto fail_free;
     }
 
-    ret = nvc_rm_open_gpu(&dev->rm, minor);
+    dev->gpu_id = gpu_id;
+    ret = find_card(dev->rm.ctl_fd, &minor, &dev->gpu_id);
     if (ret == 0)
-        ret = gpu_id_for_minor(&dev->rm, minor, &dev->gpu_id);
+        ret = nvc_rm_open_gpu(&dev->rm, minor);
     if (ret != 0) {
-        nvc_set_err(err, err_size, "opening /dev/nvidia%d failed: %s", minor, strerror(-ret));
+        if (minor >= 0)
+            nvc_set_err(err, err_size, "opening /dev/nvidia%d failed: %s", minor, strerror(-ret));
+        else
+            nvc_set_err(err, err_size, "opening GPU id 0x%x failed: %s", gpu_id, strerror(-ret));
         goto fail;
     }
 
@@ -344,6 +354,17 @@ fail_free:
         nvc_rm_close(&dev->rm);
     free(dev);
     return NULL;
+}
+
+struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size)
+{
+    return device_open(minor < 0 ? 0 : minor, 0, err, err_size);
+}
+
+struct nvchan_device *nvchan_device_open_gpu_id(uint32_t gpu_id, char *err,
+                                                size_t err_size)
+{
+    return device_open(-1, gpu_id, err, err_size);
 }
 
 void nvchan_device_close(struct nvchan_device *dev)

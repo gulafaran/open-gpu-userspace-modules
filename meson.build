@@ -15,10 +15,14 @@ add_project_arguments(cc.get_supported_arguments([
 # Shared uapi headers copied from the kernel module tree, see include/README.md.
 nv_uapi_inc = include_directories('include')
 
-if get_option('nvidia-gbm').allowed()
-  subdir('nvidia-gbm')
-endif
-
+# nvidia-gbm uses nvchan, so nvchan comes first.
 if get_option('nvchan').allowed()
   subdir('nvchan')
+endif
+
+if get_option('nvidia-gbm').allowed()
+  if not get_option('nvchan').allowed()
+    error('nvidia-gbm needs nvchan (block-linear CPU access goes through the copy engine)')
+  endif
+  subdir('nvidia-gbm')
 endif

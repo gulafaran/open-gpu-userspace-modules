@@ -22,6 +22,7 @@
 #include "class/cl0040.h"          /* NV01_MEMORY_LOCAL_USER */
 #include "class/cla06fsubch.h"     /* NVA06F_SUBCHANNEL_COPY_ENGINE */
 #include "class/clc7b5.h"          /* AMPERE_DMA_COPY_B methods */
+#include "ctrl/ctrl0000/ctrl0000unix.h"  /* IMPORT_OBJECT_FROM_FD */
 
 #define SUBCH NVA06F_SUBCHANNEL_COPY_ENGINE
 
@@ -109,6 +110,55 @@ struct nvchan_buffer *nvchan_buffer_create(struct nvchan_device *dev, uint64_t s
 fail_free:
     free(buf);
     return NULL;
+}
+
+struct nvchan_buffer *nvchan_buffer_import_rm_fd(struct nvchan_device *dev, int fd,
+                                                 uint64_t size, char *err,
+                                                 size_t err_size)
+{
+    struct nvchan_buffer *buf = calloc(1, sizeof(*buf));
+    NvU32 st;
+
+    if (buf == NULL) {
+        nvc_set_err(err, err_size, "out of memory");
+        return NULL;
+    }
+    buf->dev = dev;
+    buf->size = size;
+    buf->location = NVCHAN_VIDMEM;      /* only used for CPU mappings */
+    buf->layout = NVCHAN_PITCH;         /* the caller knows the layout */
+    buf->memory = nvc_rm_handle(&dev->rm);
+
+    NV0000_CTRL_OS_UNIX_IMPORT_OBJECT_FROM_FD_PARAMS p = {
+        .fd = fd,
+        .object = {
+            .type = NV0000_CTRL_OS_UNIX_EXPORT_OBJECT_TYPE_RM,
+            .data.rmObject = {
+                .hDevice = dev->device,
+                .hParent = dev->device,
+                .hObject = buf->memory,
+            },
+        },
+    };
+    st = nvc_rm_control(&dev->rm, dev->rm.client,
+                        NV0000_CTRL_CMD_OS_UNIX_IMPORT_OBJECT_FROM_FD, &p, sizeof(p));
+    if (st != NV_OK) {
+        nvc_set_err(err, err_size, "importing RM memory fd: %s", nvstatusToString(st));
+        free(buf);
+        return NULL;
+    }
+
+    /* Default flags: the memory's page kind (compression included). */
+    st = nvc_rm_map_dma(&dev->rm, dev->device, dev->va_space, buf->memory, 0,
+                        size, DRF_DEF(OS46, _FLAGS, _ACCESS, _READ_WRITE),
+                        &buf->gpu_va);
+    if (st != NV_OK) {
+        nvc_set_err(err, err_size, "mapping imported memory: %s", nvstatusToString(st));
+        nvc_rm_free(&dev->rm, dev->device, buf->memory);
+        free(buf);
+        return NULL;
+    }
+    return buf;
 }
 
 void nvchan_buffer_destroy(struct nvchan_buffer *buf)

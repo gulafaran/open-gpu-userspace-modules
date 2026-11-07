@@ -31,9 +31,11 @@
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
@@ -42,6 +44,7 @@
 #include <gbm_backend_abi.h>
 
 #include "nvidia-drm/nv_drm_common_ioctl.h"
+#include "nvchan.h"
 
 #define NV_GBM_EXPORT __attribute__((visibility("default")))
 
@@ -111,6 +114,13 @@ struct nv_gbm_device {
     pthread_mutex_t lock;
     struct nv_gbm_handle_ref *refs;
     unsigned num_refs, max_refs;
+
+    /* Copy engine channel for block-linear CPU access (nvchan), created on
+     * first use. ce_lock serializes all work on it and BO imports into it. */
+    pthread_mutex_t ce_lock;
+    struct nvchan_device *ce_dev;
+    struct nvchan_channel *ce;
+    bool ce_unavailable;
 };
 
 struct nv_gbm_bo {
@@ -128,15 +138,19 @@ struct nv_gbm_bo {
      * until the BO is destroyed (dev->lock). */
     uint8_t *cpu;
     size_t cpu_size;
+
+    /* The BO's memory imported into the copy engine's address space
+     * (dev->ce_lock). */
+    struct nvchan_buffer *ce_buf;
 };
 
 /* What gbm_bo_map returns as map_data. */
 struct nv_gbm_map {
     struct nv_gbm_bo *bo;
-    uint8_t *staging;   /* detiled copy of a block-linear region, or NULL */
+    struct nvchan_buffer *staging;  /* linear copy of a block-linear region */
     uint32_t x, y, width, height;
     uint32_t flags;
-    uint32_t stride;    /* of staging */
+    uint32_t stride;                /* of staging */
 };
 
 static const struct gbm_core *core;
@@ -353,6 +367,10 @@ static bool choose_modifier(const struct nv_gbm_device *dev,
 static void nv_gbm_destroy(struct gbm_device *gbm)
 {
     struct nv_gbm_device *dev = nv_gbm_device(gbm);
+
+    nvchan_channel_destroy(dev->ce);
+    nvchan_device_close(dev->ce_dev);
+    pthread_mutex_destroy(&dev->ce_lock);
 
     /* Handles still referenced belong to leaked BOs; the fd owns them. */
     pthread_mutex_destroy(&dev->lock);
@@ -742,60 +760,17 @@ static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
 
 /* ---- CPU access ------------------------------------------------------------
  *
- * The CPU sees the memory as laid out by the GPU: linear BOs are mapped
- * directly, block-linear ones are detiled into a staging copy on map and
- * tiled back on unmap.
+ * Linear BOs are mapped directly. Block-linear BOs are copied by the copy
+ * engine (nvchan) into a linear staging buffer in cached system memory on
+ * map, and back on unmap after a write map. The copy engine handles every
+ * block-linear layout (Blackwell's 8 and 16 bpp GOBs included) and reads
+ * compressed memory through its page kind, and it is far faster than CPU
+ * reads through BAR1.
  *
- * nvidia-drm can only map physically contiguous video memory while all of
- * it is statically mapped through BAR1 (resizable BAR): scanout BOs, which
- * includes cursors, and BOs of a single page. Other maps fail with ENOMEM
- * until nvidia-drm maps each BAR1 range separately.
+ * nvidia-drm maps video memory made of several BAR1 ranges (static BAR1,
+ * resizable BAR) only with the multi-range GEM mmap support in our kernel
+ * patch stack.
  */
-
-/*
- * Byte offset of byte xb of row y in a block-linear plane, for Turing+ color
- * GOBs (64 B x 8 rows, 512 B): two 32 B halves of 256 B, each four rows of
- * two 16 B sectors, then the other four rows. A block is 2^log2_gobs GOBs
- * stacked vertically; blocks are laid out row by row. Matches Mesa's
- * CopyGOBTuring2D and was verified against GL rendering (tests/gbm-map).
- *
- * Blackwell keeps this layout for >= 32 bpp but uses others for 8 and 16
- * bpp, which we can't tell apart yet, so only cpp >= 4 is detiled.
- */
-static size_t bl_offset(uint32_t xb, uint32_t y, uint32_t stride, uint32_t log2_gobs)
-{
-    const uint32_t gob_x = xb / NV_GOB_WIDTH_BYTES, gob_y = y / NV_GOB_HEIGHT_ROWS;
-    const uint32_t bx = xb % NV_GOB_WIDTH_BYTES, by = y % NV_GOB_HEIGHT_ROWS;
-    const size_t gob_bytes = NV_GOB_WIDTH_BYTES * NV_GOB_HEIGHT_ROWS;
-    const size_t block = (size_t)(gob_y >> log2_gobs) * (stride / NV_GOB_WIDTH_BYTES) + gob_x;
-    const size_t gob = (block << log2_gobs) + (gob_y & ((1u << log2_gobs) - 1));
-
-    return gob * gob_bytes + (bx >> 5) * 256 + (by >> 2) * 128 +
-           ((bx >> 4) & 1) * 64 + (by & 3) * 16 + (bx & 15);
-}
-
-/* Copies a rectangle between block-linear memory and a linear buffer, in
- * runs of at most one 16 B sector, which are contiguous in both. */
-static void bl_copy(uint8_t *tiled, uint32_t tiled_stride, uint32_t log2_gobs,
-                    uint8_t *lin, uint32_t lin_stride,
-                    uint32_t xb, uint32_t y, uint32_t wb, uint32_t h, bool to_tiled)
-{
-    for (uint32_t row = 0; row < h; row++) {
-        uint8_t *l = lin + (size_t)row * lin_stride;
-
-        for (uint32_t b = 0; b < wb;) {
-            const uint32_t x = xb + b;
-            const uint32_t run = 16 - (x & 15) < wb - b ? 16 - (x & 15) : wb - b;
-            uint8_t *t = tiled + bl_offset(x, y + row, tiled_stride, log2_gobs);
-
-            if (to_tiled)
-                memcpy(t, l + b, run);
-            else
-                memcpy(l + b, t, run);
-            b += run;
-        }
-    }
-}
 
 /* Maps the whole BO for the CPU once. Caller holds dev->lock. */
 static int bo_cpu_map(struct nv_gbm_device *dev, struct nv_gbm_bo *bo)
@@ -818,14 +793,149 @@ static int bo_cpu_map(struct nv_gbm_device *dev, struct nv_gbm_bo *bo)
     return 0;
 }
 
-static bool bo_cpu_detilable(const struct nv_gbm_device *dev, const struct nv_gbm_bo *bo)
+/*
+ * Waits for the implicit fences of the BO's dma-buf: writers before the CPU
+ * reads (POLLIN), all users before it writes (POLLOUT).
+ */
+static void wait_implicit_fences(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
+                                 bool write)
 {
-    bool compressed;
+    int fd;
 
-    return is_nv_block_linear(bo->modifier) &&
-           modifier_supported(dev, bo->fmt, bo->modifier, &compressed) &&
-           !compressed && bo->fmt->cpp[0] >= 4 &&
-           bo->stride[0] % NV_GOB_WIDTH_BYTES == 0;
+    if (drmPrimeHandleToFD(dev->base.v0.fd, bo->handle[0], DRM_CLOEXEC, &fd) != 0)
+        return;
+    struct pollfd pfd = { .fd = fd, .events = write ? POLLOUT : POLLIN };
+    while (poll(&pfd, 1, -1) < 0 && errno == EINTR)
+        ;
+    close(fd);
+}
+
+/* The copy engine channel, created on first use. dev->ce_lock held. */
+static struct nvchan_channel *ce_get(struct nv_gbm_device *dev)
+{
+    char err[256] = "";
+
+    if (dev->ce != NULL || dev->ce_unavailable)
+        return dev->ce;
+
+    if (dev->ce_dev == NULL)
+        dev->ce_dev = nvchan_device_open_gpu_id(dev->info.gpu_id, err, sizeof(err));
+    if (dev->ce_dev != NULL)
+        dev->ce = nvchan_channel_create_copy(dev->ce_dev, err, sizeof(err));
+    if (dev->ce == NULL) {
+        fprintf(stderr, "nvidia-gbm: no copy engine for block-linear maps: %s\n", err);
+        dev->ce_unavailable = true;
+    }
+    return dev->ce;
+}
+
+/* After a channel error RM has torn the channel down; the next map makes a
+ * new one. dev->ce_lock held. */
+static void ce_reset(struct nv_gbm_device *dev)
+{
+    nvchan_channel_destroy(dev->ce);
+    dev->ce = NULL;
+}
+
+/* The BO's memory in the copy engine's address space, imported through an
+ * RM memory fd from nvidia-drm. dev->ce_lock held. */
+static struct nvchan_buffer *ce_bo_buffer(struct nv_gbm_device *dev, struct nv_gbm_bo *bo)
+{
+    struct NvKmsKapiPrivExportMemoryParams_ {
+        int memFd;    /* struct NvKmsKapiPrivExportMemoryParams */
+    } nvkms = { -1 };
+    char err[256] = "";
+
+    if (bo->ce_buf != NULL)
+        return bo->ce_buf;
+
+    /* An empty RM file for the export, as the RM API library makes one. */
+    nvkms.memFd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
+    if (nvkms.memFd < 0)
+        return NULL;
+
+    struct drm_nvidia_gem_export_nvkms_memory_params p = {
+        .handle = bo->handle[0],
+        .nvkms_params_ptr = (uint64_t)(uintptr_t)&nvkms,
+        .nvkms_params_size = sizeof(nvkms),
+    };
+    if (drmIoctl(dev->base.v0.fd, DRM_IOCTL_NVIDIA_GEM_EXPORT_NVKMS_MEMORY, &p) == 0)
+        bo->ce_buf = nvchan_buffer_import_rm_fd(dev->ce_dev, nvkms.memFd, bo->size,
+                                                err, sizeof(err));
+    else
+        snprintf(err, sizeof(err), "GEM_EXPORT_NVKMS_MEMORY: %s", strerror(errno));
+    close(nvkms.memFd);
+    if (bo->ce_buf == NULL)
+        fprintf(stderr, "nvidia-gbm: importing BO for the copy engine: %s\n", err);
+    return bo->ce_buf;
+}
+
+/* Copies the map's rectangle between the BO and the staging buffer.
+ * dev->ce_lock held. */
+static int ce_transfer(struct nv_gbm_device *dev, struct nvchan_channel *ch,
+                       struct nvchan_buffer *bo_buf, struct nv_gbm_map *m, bool to_bo)
+{
+    struct nv_gbm_bo *bo = m->bo;
+    const uint32_t cpp = bo->fmt->cpp[0];
+    const struct nvchan_surface bl = {
+        .buf = bo_buf,
+        .offset = bo->offset[0],
+        .pitch = bo->stride[0],
+        .height = bo->base.v0.height,
+        .block_linear = true,
+        .log2_gobs = NV_MOD_H(bo->modifier),
+    };
+    const struct nvchan_surface lin = {
+        .buf = m->staging,
+        .pitch = m->stride,
+        .height = m->height,
+    };
+    int ret = to_bo ?
+        nvchan_copy_2d(ch, &bl, m->x * cpp, m->y, &lin, 0, 0, m->width * cpp, m->height) :
+        nvchan_copy_2d(ch, &lin, 0, 0, &bl, m->x * cpp, m->y, m->width * cpp, m->height);
+
+    if (ret == 0)
+        ret = nvchan_channel_finish(ch, 5000);
+    if (ret == -EIO || ret == -ETIMEDOUT)
+        ce_reset(dev);
+    return ret;
+}
+
+static void *map_block_linear(struct nv_gbm_device *dev, struct nv_gbm_map *m,
+                              uint32_t *stride)
+{
+    struct nv_gbm_bo *bo = m->bo;
+    const uint32_t cpp = bo->fmt->cpp[0];
+    struct nvchan_buffer *bo_buf;
+    struct nvchan_channel *ch;
+    void *cpu = NULL;
+    int ret = 0;
+
+    m->stride = ALIGN(m->width * cpp, 64u);
+
+    pthread_mutex_lock(&dev->ce_lock);
+    ch = ce_get(dev);
+    bo_buf = ch ? ce_bo_buffer(dev, bo) : NULL;
+    if (bo_buf != NULL)
+        m->staging = nvchan_buffer_create(dev->ce_dev, (uint64_t)m->stride * m->height,
+                                          NVCHAN_SYSMEM, NVCHAN_PITCH, NULL, 0);
+    if (m->staging != NULL)
+        cpu = nvchan_buffer_map(m->staging);
+    if (cpu != NULL && (m->flags & GBM_BO_TRANSFER_READ))
+        ret = ce_transfer(dev, ch, bo_buf, m, false);
+    pthread_mutex_unlock(&dev->ce_lock);
+
+    if (cpu == NULL || ret != 0) {
+        if (m->staging != NULL) {
+            pthread_mutex_lock(&dev->ce_lock);
+            nvchan_buffer_destroy(m->staging);
+            pthread_mutex_unlock(&dev->ce_lock);
+        }
+        errno = cpu == NULL ? (ch == NULL ? ENODEV : ENOMEM) : EIO;
+        return NULL;
+    }
+    *stride = m->stride;
+    return cpu;
 }
 
 static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
@@ -835,13 +945,17 @@ static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
     struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
     struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
     const bool linear = bo->modifier == DRM_FORMAT_MOD_LINEAR;
+    bool compressed;
+    void *ptr;
 
-    /* Plane 0 only, like the other backends. Compressed memory, layouts we
-     * can't detile and imports of unknown format are refused. */
+    /* Plane 0 only, like the other backends. Block-linear needs a layout
+     * we know; imports of unknown format or modifier are refused. */
     if (bo->fmt == NULL || !(flags & GBM_BO_TRANSFER_READ_WRITE) ||
         width == 0 || height == 0 ||
         (uint64_t)x + width > _bo->v0.width || (uint64_t)y + height > _bo->v0.height ||
-        (!linear && !bo_cpu_detilable(dev, bo))) {
+        (!linear && (!is_nv_block_linear(bo->modifier) ||
+                     !modifier_supported(dev, bo->fmt, bo->modifier, &compressed) ||
+                     bo->stride[0] % NV_GOB_WIDTH_BYTES != 0))) {
         errno = EINVAL;
         return NULL;
     }
@@ -853,6 +967,19 @@ static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
     }
     *m = (struct nv_gbm_map){ bo, NULL, x, y, width, height, flags, 0 };
 
+    if (flags & GBM_BO_TRANSFER_READ)
+        wait_implicit_fences(dev, bo, false);
+
+    if (!linear) {
+        ptr = map_block_linear(dev, m, stride);
+        if (ptr == NULL) {
+            free(m);
+            return NULL;
+        }
+        *map_data = m;
+        return ptr;
+    }
+
     pthread_mutex_lock(&dev->lock);
     int ret = bo_cpu_map(dev, bo);
     pthread_mutex_unlock(&dev->lock);
@@ -861,47 +988,33 @@ static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
         errno = -ret;
         return NULL;
     }
-
-    const uint32_t cpp = bo->fmt->cpp[0];
-    uint8_t *plane = bo->cpu + bo->offset[0];
-
-    if (linear) {
-        *stride = bo->stride[0];
-        *map_data = m;
-        return plane + (size_t)y * bo->stride[0] + (size_t)x * cpp;
-    }
-
-    m->stride = ALIGN(width * cpp, 64u);
-    m->staging = malloc((size_t)m->stride * height);
-    if (m->staging == NULL) {
-        free(m);
-        errno = ENOMEM;
-        return NULL;
-    }
-    if (flags & GBM_BO_TRANSFER_READ)
-        bl_copy(plane, bo->stride[0], NV_MOD_H(bo->modifier), m->staging, m->stride,
-                x * cpp, y, width * cpp, height, false);
-
-    *stride = m->stride;
+    *stride = bo->stride[0];
     *map_data = m;
-    return m->staging;
+    return bo->cpu + bo->offset[0] + (size_t)y * bo->stride[0] + (size_t)x * bo->fmt->cpp[0];
 }
 
 static void nv_gbm_bo_unmap(struct gbm_bo *_bo, void *map_data)
 {
     struct nv_gbm_map *m = map_data;
+    struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
 
     if (m == NULL)
         return;
     if (m->staging != NULL) {
-        struct nv_gbm_bo *bo = m->bo;
-        const uint32_t cpp = bo->fmt->cpp[0];
-
         if (m->flags & GBM_BO_TRANSFER_WRITE)
-            bl_copy(bo->cpu + bo->offset[0], bo->stride[0], NV_MOD_H(bo->modifier),
-                    m->staging, m->stride, m->x * cpp, m->y, m->width * cpp,
-                    m->height, true);
-        free(m->staging);
+            wait_implicit_fences(dev, m->bo, true);
+
+        pthread_mutex_lock(&dev->ce_lock);
+        if (m->flags & GBM_BO_TRANSFER_WRITE) {
+            struct nvchan_channel *ch = ce_get(dev);
+            int ret = ch && m->bo->ce_buf ?
+                ce_transfer(dev, ch, m->bo->ce_buf, m, true) : -ENODEV;
+            if (ret != 0)
+                fprintf(stderr, "nvidia-gbm: writing back a block-linear map failed: %s\n",
+                        strerror(-ret));
+        }
+        nvchan_buffer_destroy(m->staging);
+        pthread_mutex_unlock(&dev->ce_lock);
     }
     free(m);
 }
@@ -1001,6 +1114,11 @@ static void nv_gbm_bo_destroy(struct gbm_bo *_bo)
     /* The loader has already called destroy_user_data. */
     if (bo->cpu != NULL)
         munmap(bo->cpu, bo->cpu_size);
+    if (bo->ce_buf != NULL) {
+        pthread_mutex_lock(&dev->ce_lock);
+        nvchan_buffer_destroy(bo->ce_buf);
+        pthread_mutex_unlock(&dev->ce_lock);
+    }
     pthread_mutex_lock(&dev->lock);
     bo_unref_handles(dev, bo, bo->num_planes);
     pthread_mutex_unlock(&dev->lock);
@@ -1144,6 +1262,7 @@ static struct gbm_device *nv_gbm_create_device(int fd, uint32_t gbm_backend_vers
     }
     dev->compression = dev->info.page_kind_generation == 2;
     pthread_mutex_init(&dev->lock, NULL);
+    pthread_mutex_init(&dev->ce_lock, NULL);
     /* Off while NVIDIA's closed GL is the renderer. NV_GBM_LINEAR_RENDER=1
      * turns it on for a renderer that supports it. */
     const char *env = getenv("NV_GBM_LINEAR_RENDER");

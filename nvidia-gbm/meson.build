@@ -15,7 +15,7 @@ shared_module('nvidia-open_gbm',
   'src/nvidia_gbm.c',
   name_prefix : '',
   include_directories : nv_uapi_inc,
-  dependencies : [dep_libdrm, dep_gbm_headers, dependency('threads')],
+  dependencies : [dep_libdrm, dep_gbm_headers, dependency('threads'), nvchan_dep],
   install : true,
   install_dir : gbm_backends_dir)
 

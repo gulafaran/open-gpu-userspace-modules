@@ -24,6 +24,11 @@ struct nvchan_channel;
 /* Opens /dev/nvidia<minor>. On failure returns NULL and, if err is given,
  * a description. */
 struct nvchan_device *nvchan_device_open(int minor, char *err, size_t err_size);
+
+/* Opens the GPU with this RM GPU id (e.g. nvidia-drm's GET_DEV_INFO
+ * gpu_id). */
+struct nvchan_device *nvchan_device_open_gpu_id(uint32_t gpu_id, char *err,
+                                                size_t err_size);
 void nvchan_device_close(struct nvchan_device *dev);
 
 const char *nvchan_device_name(const struct nvchan_device *dev);
@@ -63,6 +68,17 @@ struct nvchan_buffer *nvchan_buffer_create(struct nvchan_device *dev, uint64_t s
                                            enum nvchan_location location,
                                            enum nvchan_layout layout,
                                            char *err, size_t err_size);
+/*
+ * Imports memory another RM client exported to an RM file descriptor
+ * (NV0000_CTRL_CMD_OS_UNIX_EXPORT_OBJECT_TO_FD, e.g. nvidia-drm's
+ * GEM_EXPORT_NVKMS_MEMORY) and maps it into the GPU address space with the
+ * memory's own page kind, so compressed memory is decompressed on access.
+ * The fd can be closed afterwards; destroying the buffer drops our
+ * reference, not the memory.
+ */
+struct nvchan_buffer *nvchan_buffer_import_rm_fd(struct nvchan_device *dev, int fd,
+                                                 uint64_t size, char *err,
+                                                 size_t err_size);
 void nvchan_buffer_destroy(struct nvchan_buffer *buf);
 uint64_t nvchan_buffer_size(const struct nvchan_buffer *buf);
 uint64_t nvchan_buffer_gpu_address(const struct nvchan_buffer *buf);
