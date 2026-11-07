@@ -19,7 +19,9 @@
 #define NVCHAN_RM_H
 
 #include <pthread.h>
+#include <stdbool.h>
 #include <stddef.h>
+#include <sys/types.h>
 
 #include "nvtypes.h"
 #include "nvos.h"
@@ -33,6 +35,7 @@ struct nvc_rm {
     NvHandle client;
     NvU32 next_handle;
     char version[64];       /* of the running kernel module */
+    pid_t owner;            /* the process that opened the client */
 
     pthread_mutex_t lock;   /* mappings, sysmem handles, next_handle */
     struct nvc_rm_mapping *mappings;
@@ -50,6 +53,14 @@ int nvc_rm_open(struct nvc_rm *rm);
 int nvc_rm_open_gpu(struct nvc_rm *rm, int minor);
 
 void nvc_rm_close(struct nvc_rm *rm);
+
+/*
+ * Whether the calling process owns the client. A child after fork()
+ * inherits the files and mappings but must not use the parent's RM client:
+ * every RM call from another process fails with NV_ERR_INVALID_STATE, and
+ * nvc_rm_close() then only releases the child's copies.
+ */
+bool nvc_rm_owned(const struct nvc_rm *rm);
 
 /* A new client-unique object handle. */
 NvHandle nvc_rm_handle(struct nvc_rm *rm);

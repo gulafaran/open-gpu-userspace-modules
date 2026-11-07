@@ -97,6 +97,7 @@ int nvc_rm_open(struct nvc_rm *rm)
     memset(rm, 0, sizeof(*rm));
     rm->dev_fd = -1;
     rm->minor = -1;
+    rm->owner = getpid();
     rm->next_handle = NVC_HANDLE_BASE;
     pthread_mutex_init(&rm->lock, NULL);
 
@@ -130,6 +131,16 @@ fail:
     rm->ctl_fd = -1;
     return ret;
 }
+
+bool nvc_rm_owned(const struct nvc_rm *rm)
+{
+    return rm->owner == getpid();
+}
+
+#define REQUIRE_OWNER(rm) do {                  \
+        if (!nvc_rm_owned(rm))                  \
+            return NV_ERR_INVALID_STATE;        \
+    } while (0)
 
 int nvc_rm_open_gpu(struct nvc_rm *rm, int minor)
 {
@@ -168,7 +179,8 @@ void nvc_rm_close(struct nvc_rm *rm)
     }
     rm->mappings = NULL;
 
-    if (rm->ctl_fd >= 0 && rm->client != 0) {
+    /* After fork() the client is the parent's: only drop our copies. */
+    if (rm->ctl_fd >= 0 && rm->client != 0 && nvc_rm_owned(rm)) {
         NVOS00_PARAMETERS p = { .hRoot = rm->client, .hObjectParent = rm->client,
                                 .hObjectOld = rm->client };
         nv_ioctl(rm->ctl_fd, NV_ESC_RM_FREE, &p, sizeof(p));
@@ -242,6 +254,8 @@ static struct nvc_rm_mapping *take_mapping(struct nvc_rm *rm, void *cpu,
 NvU32 nvc_rm_alloc(struct nvc_rm *rm, NvHandle parent, NvHandle object,
                    NvU32 cls, void *params)
 {
+    REQUIRE_OWNER(rm);
+
     /* RM derives the parameter size from the class. */
     NVOS21_PARAMETERS p = {
         .hRoot = rm->client,
@@ -265,7 +279,8 @@ NvU32 nvc_rm_free(struct nvc_rm *rm, NvHandle parent, NvHandle object)
     struct nvc_rm_mapping *m;
     int ret;
 
-    /* A CPU mapping made at allocation goes away with the memory. */
+    /* A CPU mapping made at allocation goes away with the memory; that much
+     * is ours to release even in a child after fork(). */
     pthread_mutex_lock(&rm->lock);
     m = take_mapping(rm, NULL, object, true);
     remove_sysmem(rm, object);
@@ -276,6 +291,7 @@ NvU32 nvc_rm_free(struct nvc_rm *rm, NvHandle parent, NvHandle object)
         free(m);
     }
 
+    REQUIRE_OWNER(rm);
     ret = nv_ioctl(rm->ctl_fd, NV_ESC_RM_FREE, &p, sizeof(p));
     return ret ? os_status(ret) : p.status;
 }
@@ -283,6 +299,8 @@ NvU32 nvc_rm_free(struct nvc_rm *rm, NvHandle parent, NvHandle object)
 NvU32 nvc_rm_control(struct nvc_rm *rm, NvHandle object, NvU32 cmd,
                      void *params, NvU32 size)
 {
+    REQUIRE_OWNER(rm);
+
     NVOS54_PARAMETERS p = {
         .hClient = rm->client,
         .hObject = object,
@@ -297,6 +315,8 @@ NvU32 nvc_rm_control(struct nvc_rm *rm, NvHandle object, NvU32 cmd,
 
 NvU32 nvc_rm_vid_heap_control(struct nvc_rm *rm, NVOS32_PARAMETERS *params)
 {
+    REQUIRE_OWNER(rm);
+
     int ret;
 
     params->hRoot = rm->client;
@@ -325,6 +345,7 @@ NvU32 nvc_rm_alloc_memory(struct nvc_rm *rm, NvHandle parent, NvHandle memory,
     };
     int ret;
 
+    REQUIRE_OWNER(rm);
     if (rm->dev_fd < 0)
         return NV_ERR_INVALID_STATE;
 
@@ -395,6 +416,7 @@ NvU32 nvc_rm_map(struct nvc_rm *rm, NvHandle device, NvHandle memory,
     bool sysmem;
     int ret;
 
+    REQUIRE_OWNER(rm);
     pthread_mutex_lock(&rm->lock);
     sysmem = is_sysmem(rm, memory);
     pthread_mutex_unlock(&rm->lock);
@@ -453,7 +475,8 @@ NvU32 nvc_rm_unmap(struct nvc_rm *rm, NvHandle device, NvHandle memory,
         .pLinearAddress = m->token, .flags = flags,
     };
     munmap(m->cpu, m->size);
-    ret = nv_ioctl(rm->ctl_fd, NV_ESC_RM_UNMAP_MEMORY, &p, sizeof(p));
+    ret = nvc_rm_owned(rm) ?
+        nv_ioctl(rm->ctl_fd, NV_ESC_RM_UNMAP_MEMORY, &p, sizeof(p)) : -EPERM;
     close(m->fd);
     free(m);
     return ret ? os_status(ret) : p.status;
@@ -461,6 +484,8 @@ NvU32 nvc_rm_unmap(struct nvc_rm *rm, NvHandle device, NvHandle memory,
 
 NvU32 nvc_rm_alloc_os_event(struct nvc_rm *rm, int fd)
 {
+    REQUIRE_OWNER(rm);
+
     nv_ioctl_alloc_os_event_t p = { .hClient = rm->client, .fd = (NvU32)fd };
     int ret = nv_ioctl(fd, NV_ESC_ALLOC_OS_EVENT, &p, sizeof(p));
 
@@ -469,6 +494,8 @@ NvU32 nvc_rm_alloc_os_event(struct nvc_rm *rm, int fd)
 
 NvU32 nvc_rm_free_os_event(struct nvc_rm *rm, int fd)
 {
+    REQUIRE_OWNER(rm);
+
     nv_ioctl_free_os_event_t p = { .hClient = rm->client, .fd = (NvU32)fd };
     int ret = nv_ioctl(fd, NV_ESC_FREE_OS_EVENT, &p, sizeof(p));
 
@@ -489,7 +516,7 @@ NvU32 nvc_rm_map_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
         .flags = flags,
         .dmaOffset = *dma_offset,
     };
-    int ret = nv_ioctl(rm->ctl_fd, NV_ESC_RM_MAP_MEMORY_DMA, &p, sizeof(p));
+    int ret = !nvc_rm_owned(rm) ? -EPERM : nv_ioctl(rm->ctl_fd, NV_ESC_RM_MAP_MEMORY_DMA, &p, sizeof(p));
 
     if (ret == 0 && p.status == NV_OK)
         *dma_offset = p.dmaOffset;
@@ -507,7 +534,7 @@ NvU32 nvc_rm_unmap_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
         .flags = flags,
         .dmaOffset = dma_offset,
     };
-    int ret = nv_ioctl(rm->ctl_fd, NV_ESC_RM_UNMAP_MEMORY_DMA, &p, sizeof(p));
+    int ret = !nvc_rm_owned(rm) ? -EPERM : nv_ioctl(rm->ctl_fd, NV_ESC_RM_UNMAP_MEMORY_DMA, &p, sizeof(p));
 
     return ret ? os_status(ret) : p.status;
 }

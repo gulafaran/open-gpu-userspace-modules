@@ -54,3 +54,10 @@ foreach t : ['nvchan-info', 'nvchan-copy']
     dependencies : nvchan_dep,
     install : false)
 endforeach
+
+# Uses the private header for the fault test.
+executable('nvchan-stress', 'tests/nvchan-stress.c',
+  include_directories : [nvchan_kernel_inc, include_directories('src')],
+  c_args : nvchan_c_args,
+  dependencies : nvchan_dep,
+  install : false)

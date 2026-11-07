@@ -46,6 +46,10 @@ struct nvchan_buffer *nvchan_buffer_create(struct nvchan_device *dev, uint64_t s
     struct nvchan_buffer *buf;
     NvU32 st;
 
+    if (!nvc_rm_owned(&dev->rm)) {
+        nvc_set_err(err, err_size, "device belongs to another process (after fork)");
+        return NULL;
+    }
     if (size == 0) {
         nvc_set_err(err, err_size, "zero size");
         return NULL;
@@ -519,6 +523,11 @@ int nvchan_channel_finish(struct nvchan_channel *ch, unsigned timeout_ms)
     const NvU64 start = now_us();
     const NvU64 deadline = start + (NvU64)timeout_ms * 1000;
     unsigned sleep_us = 10;
+
+    /* Kicking off from a child after fork() would drive the parent's
+     * channel. */
+    if (!nvc_rm_owned(&ch->dev->rm))
+        return -EPERM;
 
     /* After all queued transfers, with a system-wide flush so the CPU
      * sees their writes. */

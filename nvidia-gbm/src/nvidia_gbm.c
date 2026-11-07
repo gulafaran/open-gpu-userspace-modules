@@ -139,15 +139,17 @@ struct nv_gbm_bo {
     uint8_t *cpu;
     size_t cpu_size;
 
-    /* The BO's memory imported into the copy engine's address space
-     * (dev->ce_lock). */
+    /* The BO's memory imported into the copy engine's address space, and
+     * the nvchan device it was imported into (dev->ce_lock). */
     struct nvchan_buffer *ce_buf;
+    struct nvchan_device *ce_buf_dev;
 };
 
 /* What gbm_bo_map returns as map_data. */
 struct nv_gbm_map {
     struct nv_gbm_bo *bo;
     struct nvchan_buffer *staging;  /* linear copy of a block-linear region */
+    struct nvchan_device *ce_dev;   /* the nvchan device staging belongs to */
     uint32_t x, y, width, height;
     uint32_t flags;
     uint32_t stride;                /* of staging */
@@ -815,6 +817,18 @@ static struct nvchan_channel *ce_get(struct nv_gbm_device *dev)
 {
     char err[256] = "";
 
+    /*
+     * In a child after fork() the channel is the parent's. Leave it alone:
+     * its GPU objects belong to the parent's RM client, and BOs may still
+     * reference the old device (destroying their buffers only drops local
+     * copies). Start over with a device of our own.
+     */
+    if (dev->ce_dev != NULL && !nvchan_device_is_usable(dev->ce_dev)) {
+        dev->ce = NULL;
+        dev->ce_dev = NULL;
+        dev->ce_unavailable = false;
+    }
+
     if (dev->ce != NULL || dev->ce_unavailable)
         return dev->ce;
 
@@ -846,8 +860,13 @@ static struct nvchan_buffer *ce_bo_buffer(struct nv_gbm_device *dev, struct nv_g
     } nvkms = { -1 };
     char err[256] = "";
 
-    if (bo->ce_buf != NULL)
+    if (bo->ce_buf != NULL && bo->ce_buf_dev == dev->ce_dev)
         return bo->ce_buf;
+    if (bo->ce_buf != NULL) {
+        /* Imported into a device of the parent before fork(). */
+        nvchan_buffer_destroy(bo->ce_buf);
+        bo->ce_buf = NULL;
+    }
 
     /* An empty RM file for the export, as the RM API library makes one. */
     nvkms.memFd = open("/dev/nvidiactl", O_RDWR | O_CLOEXEC);
@@ -867,6 +886,7 @@ static struct nvchan_buffer *ce_bo_buffer(struct nv_gbm_device *dev, struct nv_g
     close(nvkms.memFd);
     if (bo->ce_buf == NULL)
         fprintf(stderr, "nvidia-gbm: importing BO for the copy engine: %s\n", err);
+    bo->ce_buf_dev = dev->ce_dev;
     return bo->ce_buf;
 }
 
@@ -916,9 +936,11 @@ static void *map_block_linear(struct nv_gbm_device *dev, struct nv_gbm_map *m,
     pthread_mutex_lock(&dev->ce_lock);
     ch = ce_get(dev);
     bo_buf = ch ? ce_bo_buffer(dev, bo) : NULL;
-    if (bo_buf != NULL)
+    if (bo_buf != NULL) {
+        m->ce_dev = dev->ce_dev;
         m->staging = nvchan_buffer_create(dev->ce_dev, (uint64_t)m->stride * m->height,
                                           NVCHAN_SYSMEM, NVCHAN_PITCH, NULL, 0);
+    }
     if (m->staging != NULL)
         cpu = nvchan_buffer_map(m->staging);
     if (cpu != NULL && (m->flags & GBM_BO_TRANSFER_READ))
@@ -965,7 +987,8 @@ static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
         errno = ENOMEM;
         return NULL;
     }
-    *m = (struct nv_gbm_map){ bo, NULL, x, y, width, height, flags, 0 };
+    *m = (struct nv_gbm_map){ .bo = bo, .x = x, .y = y, .width = width,
+                              .height = height, .flags = flags };
 
     if (flags & GBM_BO_TRANSFER_READ)
         wait_implicit_fences(dev, bo, false);
@@ -1007,8 +1030,10 @@ static void nv_gbm_bo_unmap(struct gbm_bo *_bo, void *map_data)
         pthread_mutex_lock(&dev->ce_lock);
         if (m->flags & GBM_BO_TRANSFER_WRITE) {
             struct nvchan_channel *ch = ce_get(dev);
-            int ret = ch && m->bo->ce_buf ?
-                ce_transfer(dev, ch, m->bo->ce_buf, m, true) : -ENODEV;
+            struct nvchan_buffer *bo_buf = ch ? ce_bo_buffer(dev, m->bo) : NULL;
+            /* Mapped before a fork(): staging belongs to the parent. */
+            int ret = m->ce_dev != dev->ce_dev ? -EPERM :
+                      bo_buf ? ce_transfer(dev, ch, bo_buf, m, true) : -ENODEV;
             if (ret != 0)
                 fprintf(stderr, "nvidia-gbm: writing back a block-linear map failed: %s\n",
                         strerror(-ret));

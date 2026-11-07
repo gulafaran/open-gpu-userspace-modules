@@ -383,6 +383,11 @@ void nvchan_device_close(struct nvchan_device *dev)
     free(dev);
 }
 
+bool nvchan_device_is_usable(const struct nvchan_device *dev)
+{
+    return nvc_rm_owned(&dev->rm);
+}
+
 const char *nvchan_device_name(const struct nvchan_device *dev)
 {
     return dev->name;
@@ -430,6 +435,10 @@ struct nvchan_channel *nvchan_channel_create_copy(struct nvchan_device *dev,
     NvU32 engine = 0;
     NvU32 st;
 
+    if (!nvc_rm_owned(&dev->rm)) {
+        nvc_set_err(err, err_size, "device belongs to another process (after fork)");
+        return NULL;
+    }
     if (dev->copy_class == 0) {
         nvc_set_err(err, err_size, "no supported copy engine class");
         return NULL;

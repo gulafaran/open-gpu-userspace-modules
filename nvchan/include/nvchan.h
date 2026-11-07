@@ -31,6 +31,15 @@ struct nvchan_device *nvchan_device_open_gpu_id(uint32_t gpu_id, char *err,
                                                 size_t err_size);
 void nvchan_device_close(struct nvchan_device *dev);
 
+/*
+ * False in a child after fork(): the device, its channels and buffers
+ * belong to the parent's RM client. Every operation on them fails then
+ * (NULL, -EPERM or a failed finish), and destroying or closing them only
+ * releases the child's copies, never the parent's GPU objects. Open a new
+ * device in the child instead.
+ */
+bool nvchan_device_is_usable(const struct nvchan_device *dev);
+
 const char *nvchan_device_name(const struct nvchan_device *dev);
 const char *nvchan_device_driver_version(const struct nvchan_device *dev);
 bool nvchan_device_has_class(const struct nvchan_device *dev, uint32_t cls);
