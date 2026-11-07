@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <unistd.h>
 
 #include <xf86drm.h>
@@ -121,6 +122,20 @@ struct nv_gbm_bo {
     uint32_t handle[GBM_MAX_PLANES];
     uint32_t stride[GBM_MAX_PLANES];
     uint32_t offset[GBM_MAX_PLANES];
+
+    /* CPU mapping of the whole BO, made on the first gbm_bo_map and kept
+     * until the BO is destroyed (dev->lock). */
+    uint8_t *cpu;
+    size_t cpu_size;
+};
+
+/* What gbm_bo_map returns as map_data. */
+struct nv_gbm_map {
+    struct nv_gbm_bo *bo;
+    uint8_t *staging;   /* detiled copy of a block-linear region, or NULL */
+    uint32_t x, y, width, height;
+    uint32_t flags;
+    uint32_t stride;    /* of staging */
 };
 
 static const struct gbm_core *core;
@@ -706,22 +721,193 @@ static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
     return &bo->base;
 }
 
-static void *nv_gbm_bo_map(struct gbm_bo *bo, uint32_t x, uint32_t y,
+/* ---- CPU access ------------------------------------------------------------
+ *
+ * The CPU sees the memory as laid out by the GPU: linear BOs are mapped
+ * directly, block-linear ones are detiled into a staging copy on map and
+ * tiled back on unmap.
+ *
+ * nvidia-drm can only map physically contiguous video memory while all of
+ * it is statically mapped through BAR1 (resizable BAR): scanout BOs, which
+ * includes cursors, and BOs of a single page. Other maps fail with ENOMEM
+ * until nvidia-drm maps each BAR1 range separately.
+ */
+
+/*
+ * Byte offset of byte xb of row y in a block-linear plane, for Turing+ color
+ * GOBs (64 B x 8 rows, 512 B): two 32 B halves of 256 B, each four rows of
+ * two 16 B sectors, then the other four rows. A block is 2^log2_gobs GOBs
+ * stacked vertically; blocks are laid out row by row. Matches Mesa's
+ * CopyGOBTuring2D and was verified against GL rendering (tests/gbm-map).
+ *
+ * Blackwell keeps this layout for >= 32 bpp but uses others for 8 and 16
+ * bpp, which we can't tell apart yet, so only cpp >= 4 is detiled.
+ */
+static size_t bl_offset(uint32_t xb, uint32_t y, uint32_t stride, uint32_t log2_gobs)
+{
+    const uint32_t gob_x = xb / NV_GOB_WIDTH_BYTES, gob_y = y / NV_GOB_HEIGHT_ROWS;
+    const uint32_t bx = xb % NV_GOB_WIDTH_BYTES, by = y % NV_GOB_HEIGHT_ROWS;
+    const size_t gob_bytes = NV_GOB_WIDTH_BYTES * NV_GOB_HEIGHT_ROWS;
+    const size_t block = (size_t)(gob_y >> log2_gobs) * (stride / NV_GOB_WIDTH_BYTES) + gob_x;
+    const size_t gob = (block << log2_gobs) + (gob_y & ((1u << log2_gobs) - 1));
+
+    return gob * gob_bytes + (bx >> 5) * 256 + (by >> 2) * 128 +
+           ((bx >> 4) & 1) * 64 + (by & 3) * 16 + (bx & 15);
+}
+
+/* Copies a rectangle between block-linear memory and a linear buffer, in
+ * runs of at most one 16 B sector, which are contiguous in both. */
+static void bl_copy(uint8_t *tiled, uint32_t tiled_stride, uint32_t log2_gobs,
+                    uint8_t *lin, uint32_t lin_stride,
+                    uint32_t xb, uint32_t y, uint32_t wb, uint32_t h, bool to_tiled)
+{
+    for (uint32_t row = 0; row < h; row++) {
+        uint8_t *l = lin + (size_t)row * lin_stride;
+
+        for (uint32_t b = 0; b < wb;) {
+            const uint32_t x = xb + b;
+            const uint32_t run = 16 - (x & 15) < wb - b ? 16 - (x & 15) : wb - b;
+            uint8_t *t = tiled + bl_offset(x, y + row, tiled_stride, log2_gobs);
+
+            if (to_tiled)
+                memcpy(t, l + b, run);
+            else
+                memcpy(l + b, t, run);
+            b += run;
+        }
+    }
+}
+
+/* Maps the whole BO for the CPU once. Caller holds dev->lock. */
+static int bo_cpu_map(struct nv_gbm_device *dev, struct nv_gbm_bo *bo)
+{
+    struct drm_nvidia_gem_map_offset_params p = { .handle = bo->handle[0] };
+
+    if (bo->cpu != NULL)
+        return 0;
+    if (bo->size == 0)
+        return -EINVAL;
+    if (drmIoctl(dev->base.v0.fd, DRM_IOCTL_NVIDIA_GEM_MAP_OFFSET, &p) != 0)
+        return -errno;
+
+    void *ptr = mmap(NULL, bo->size, PROT_READ | PROT_WRITE, MAP_SHARED,
+                     dev->base.v0.fd, (off_t)p.offset);
+    if (ptr == MAP_FAILED)
+        return -errno;
+    bo->cpu = ptr;
+    bo->cpu_size = bo->size;
+    return 0;
+}
+
+static bool bo_cpu_detilable(const struct nv_gbm_device *dev, const struct nv_gbm_bo *bo)
+{
+    bool compressed;
+
+    return is_nv_block_linear(bo->modifier) &&
+           modifier_supported(dev, bo->fmt, bo->modifier, &compressed) &&
+           !compressed && bo->fmt->cpp[0] >= 4 &&
+           bo->stride[0] % NV_GOB_WIDTH_BYTES == 0;
+}
+
+static void *nv_gbm_bo_map(struct gbm_bo *_bo, uint32_t x, uint32_t y,
                            uint32_t width, uint32_t height, uint32_t flags,
                            uint32_t *stride, void **map_data)
 {
-    errno = ENOSYS;
-    return NULL;
+    struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
+    struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
+    const bool linear = bo->modifier == DRM_FORMAT_MOD_LINEAR;
+
+    /* Plane 0 only, like the other backends. Compressed memory, layouts we
+     * can't detile and imports of unknown format are refused. */
+    if (bo->fmt == NULL || !(flags & GBM_BO_TRANSFER_READ_WRITE) ||
+        width == 0 || height == 0 ||
+        (uint64_t)x + width > _bo->v0.width || (uint64_t)y + height > _bo->v0.height ||
+        (!linear && !bo_cpu_detilable(dev, bo))) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    struct nv_gbm_map *m = calloc(1, sizeof(*m));
+    if (m == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    *m = (struct nv_gbm_map){ bo, NULL, x, y, width, height, flags, 0 };
+
+    pthread_mutex_lock(&dev->lock);
+    int ret = bo_cpu_map(dev, bo);
+    pthread_mutex_unlock(&dev->lock);
+    if (ret != 0) {
+        free(m);
+        errno = -ret;
+        return NULL;
+    }
+
+    const uint32_t cpp = bo->fmt->cpp[0];
+    uint8_t *plane = bo->cpu + bo->offset[0];
+
+    if (linear) {
+        *stride = bo->stride[0];
+        *map_data = m;
+        return plane + (size_t)y * bo->stride[0] + (size_t)x * cpp;
+    }
+
+    m->stride = ALIGN(width * cpp, 64u);
+    m->staging = malloc((size_t)m->stride * height);
+    if (m->staging == NULL) {
+        free(m);
+        errno = ENOMEM;
+        return NULL;
+    }
+    if (flags & GBM_BO_TRANSFER_READ)
+        bl_copy(plane, bo->stride[0], NV_MOD_H(bo->modifier), m->staging, m->stride,
+                x * cpp, y, width * cpp, height, false);
+
+    *stride = m->stride;
+    *map_data = m;
+    return m->staging;
 }
 
-static void nv_gbm_bo_unmap(struct gbm_bo *bo, void *map_data)
+static void nv_gbm_bo_unmap(struct gbm_bo *_bo, void *map_data)
 {
+    struct nv_gbm_map *m = map_data;
+
+    if (m == NULL)
+        return;
+    if (m->staging != NULL) {
+        struct nv_gbm_bo *bo = m->bo;
+        const uint32_t cpp = bo->fmt->cpp[0];
+
+        if (m->flags & GBM_BO_TRANSFER_WRITE)
+            bl_copy(bo->cpu + bo->offset[0], bo->stride[0], NV_MOD_H(bo->modifier),
+                    m->staging, m->stride, m->x * cpp, m->y, m->width * cpp,
+                    m->height, true);
+        free(m->staging);
+    }
+    free(m);
 }
 
-static int nv_gbm_bo_write(struct gbm_bo *bo, const void *buf, size_t data)
+/* Copies raw bytes to the start of a linear BO (cursor images), like Mesa's
+ * backend does for dumb buffers. */
+static int nv_gbm_bo_write(struct gbm_bo *_bo, const void *buf, size_t count)
 {
-    errno = ENOSYS;
-    return -1;
+    struct nv_gbm_bo *bo = nv_gbm_bo(_bo);
+    struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
+
+    if (bo->modifier != DRM_FORMAT_MOD_LINEAR || count > bo->size - bo->offset[0]) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    pthread_mutex_lock(&dev->lock);
+    int ret = bo_cpu_map(dev, bo);
+    pthread_mutex_unlock(&dev->lock);
+    if (ret != 0) {
+        errno = -ret;
+        return -1;
+    }
+    memcpy(bo->cpu + bo->offset[0], buf, count);
+    return 0;
 }
 
 static bool valid_plane(const struct nv_gbm_bo *bo, int plane)
@@ -794,6 +980,8 @@ static void nv_gbm_bo_destroy(struct gbm_bo *_bo)
     struct nv_gbm_device *dev = nv_gbm_device(_bo->gbm);
 
     /* The loader has already called destroy_user_data. */
+    if (bo->cpu != NULL)
+        munmap(bo->cpu, bo->cpu_size);
     pthread_mutex_lock(&dev->lock);
     bo_unref_handles(dev, bo, bo->num_planes);
     pthread_mutex_unlock(&dev->lock);
