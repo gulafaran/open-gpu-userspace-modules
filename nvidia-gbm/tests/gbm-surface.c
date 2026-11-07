@@ -30,6 +30,8 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+#include "nvidia-drm/nv_drm_common_ioctl.h"
+
 static PFNEGLCREATEIMAGEKHRPROC create_image;
 static PFNEGLDESTROYIMAGEKHRPROC destroy_image;
 static PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC image_target_rb;
@@ -223,8 +225,16 @@ static void run(struct gbm_device *gbm, const char *tag, uint32_t w, uint32_t h,
         uint64_t mod = gbm_bo_get_modifier(bo);
         if (f == 0) {
             first_mod = mod;
-            printf("  info  front buffer mod=0x%016" PRIx64 " stride=%u planes=%d\n",
-                   mod, gbm_bo_get_stride(bo), gbm_bo_get_plane_count(bo));
+            struct drm_nvidia_gem_identify_object_params id = {
+                .handle = gbm_bo_get_handle(bo).u32,
+            };
+            const char *type = "?";
+            if (drmIoctl(fd, DRM_IOCTL_NVIDIA_GEM_IDENTIFY_OBJECT, &id) == 0)
+                type = id.object_type == NV_GEM_OBJECT_NVKMS ? "NVKMS memory" :
+                       id.object_type == NV_GEM_OBJECT_DMABUF ? "DMABUF (sysmem path)" :
+                       id.object_type == NV_GEM_OBJECT_USERMEMORY ? "user memory" : "unknown";
+            printf("  info  front buffer mod=0x%016" PRIx64 " stride=%u planes=%d GEM=%s\n",
+                   mod, gbm_bo_get_stride(bo), gbm_bo_get_plane_count(bo), type);
         }
         bool in_list = mods == NULL;
         for (unsigned i = 0; i < nmods && !in_list; i++)

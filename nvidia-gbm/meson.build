@@ -32,6 +32,7 @@ if dep_egl.found() and dep_glesv2.found()
     dependencies : [dependency('gbm'), dep_libdrm, dep_egl, dep_glesv2],
     install : false)
   executable('gbm-surface', 'tests/gbm-surface.c',
+    include_directories : nv_uapi_inc,
     dependencies : [dependency('gbm'), dep_libdrm, dep_egl, dep_glesv2],
     install : false)
   executable('gbm-map', 'tests/gbm-map.c',

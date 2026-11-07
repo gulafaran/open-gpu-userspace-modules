@@ -624,8 +624,7 @@ static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
         fds[0] = d->fd;
         strides[0] = (int)d->stride;
         offsets[0] = 0;
-        /* The importer has to know the layout some other way, as with
-         * Mesa's backend. */
+        /* Resolved below once the format is known. */
         modifier = DRM_FORMAT_MOD_INVALID;
         break;
     }
@@ -669,6 +668,25 @@ static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
             return NULL;
         }
     }
+    /*
+     * A buffer imported without a modifier has the implicit layout, which
+     * between NVIDIA's drivers is the default render layout: what bo_create
+     * picks for GBM_BO_USE_RENDERING (compressed generic kind for >= 32 bpp,
+     * the GOB height for the buffer height). NVIDIA's GL and Vulkan allocate
+     * modifier-less buffers that way, Xwayland's implicit DRI3 path imports
+     * them with GBM_BO_IMPORT_FD and builds the EGLImage from the modifier
+     * we report, and eglcore rejects DRM_FORMAT_MOD_INVALID. The closed
+     * allocator reports the same. If that layout doesn't fit the dma-buf,
+     * the buffer is something else and stays DRM_FORMAT_MOD_INVALID.
+     */
+    if (type == GBM_BO_IMPORT_FD && fmt != NULL) {
+        uint64_t implicit = nv_bl_modifier(dev,
+                                           dev->compression && format_compressible(fmt),
+                                           preferred_log2_gobs(height));
+        if (import_fits(fmt, implicit, width, height, fds, strides, offsets))
+            modifier = implicit;
+    }
+
     if (!import_fits(fmt, modifier, width, height, fds, strides, offsets)) {
         errno = EINVAL;
         return NULL;

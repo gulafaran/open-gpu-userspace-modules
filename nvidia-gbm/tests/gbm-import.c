@@ -325,9 +325,16 @@ static void invalid(struct gbm_device *gbm)
         .fd = fd, .width = 640, .height = 480,
         .stride = gbm_bo_get_stride(src), .format = GBM_FORMAT_XRGB8888,
     };
+    /* Implicit layout = the default render layout (see bo_import). */
+    struct gbm_bo *dflt = gbm_bo_create(gbm, 640, 480, GBM_FORMAT_XRGB8888,
+                                        GBM_BO_USE_RENDERING);
+    uint64_t want = dflt ? gbm_bo_get_modifier(dflt) : 0;
+    if (dflt)
+        gbm_bo_destroy(dflt);
     bo = gbm_bo_import(gbm, GBM_BO_IMPORT_FD, &legacy, 0);
-    CHECK(bo != NULL && gbm_bo_get_modifier(bo) == DRM_FORMAT_MOD_INVALID,
-          "GBM_BO_IMPORT_FD works with an implicit modifier");
+    CHECK(bo != NULL && gbm_bo_get_modifier(bo) == want,
+          "GBM_BO_IMPORT_FD reports the default render layout (0x%016" PRIx64 ")",
+          bo ? gbm_bo_get_modifier(bo) : 0);
     if (bo)
         gbm_bo_destroy(bo);
 
