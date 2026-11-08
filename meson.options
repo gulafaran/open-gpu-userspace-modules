@@ -3,4 +3,4 @@ option('nvidia-gbm', type : 'feature', value : 'enabled',
 option('nvchan', type : 'feature', value : 'enabled',
        description : 'GPU command submission library')
 option('kernel_src', type : 'string', value : '',
-       description : 'open-gpu-kernel-modules tree nvchan builds against (default ../open-gpu-kernel-modules)')
+       description : 'open-gpu-kernel-modules tree nvchan builds against (default: the copy in third_party/)')

@@ -1,24 +1,34 @@
 # nvchan builds against the open-gpu-kernel-modules tree: RM structures and
 # nvidia-push must match the running nvidia.ko exactly.
 fs = import('fs')
+# By default the copy in third_party/ (tools/sync-kernel-files.sh); set
+# -Dkernel_src= to build against a full open-gpu-kernel-modules tree instead.
 kernel_src = get_option('kernel_src')
 if kernel_src == ''
-  kernel_src = fs.parent(meson.project_source_root()) / 'open-gpu-kernel-modules'
+  # Relative: include_directories() refuses absolute paths into the source tree.
+  kernel_src = '..' / 'third_party/open-gpu-kernel-modules'
 endif
 if not fs.is_file(kernel_src / 'src/common/unix/nvidia-push/src/nvidia-push.c')
   error('open-gpu-kernel-modules not found at ' + kernel_src + ', set -Dkernel_src=')
 endif
 
-nvchan_kernel_inc = include_directories(
-  kernel_src / 'src/common/unix/nvidia-push/interface',
-  kernel_src / 'src/common/unix/nvidia-push/include',
-  kernel_src / 'src/common/unix/common/inc',
-  kernel_src / 'src/common/sdk/nvidia/inc',
-  kernel_src / 'src/common/inc',
-  kernel_src / 'src/common/shared/inc',
-  kernel_src / 'src/nvidia/arch/nvalloc/unix/include',
-  kernel_src / 'kernel-open/common/inc',
-  is_system : true)
+# The third_party copy only has the directories that hold used headers.
+nvchan_kernel_dirs = []
+foreach d : [
+    kernel_src / 'src/common/unix/nvidia-push/interface',
+    kernel_src / 'src/common/unix/nvidia-push/include',
+    kernel_src / 'src/common/unix/common/inc',
+    kernel_src / 'src/common/sdk/nvidia/inc',
+    kernel_src / 'src/common/inc',
+    kernel_src / 'src/common/shared/inc',
+    kernel_src / 'src/nvidia/arch/nvalloc/unix/include',
+    kernel_src / 'kernel-open/common/inc',
+  ]
+  if fs.is_dir(d)
+    nvchan_kernel_dirs += d
+  endif
+endforeach
+nvchan_kernel_inc = include_directories(nvchan_kernel_dirs, is_system : true)
 
 nvchan_c_args = cc.get_supported_arguments([
   '-DNVCPU_X86_64', '-DNV_LINUX', '-DNV_UNIX',
