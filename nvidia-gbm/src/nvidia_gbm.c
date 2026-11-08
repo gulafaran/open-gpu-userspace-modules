@@ -90,12 +90,32 @@ static const struct nv_gbm_format nv_gbm_formats[] = {
     { DRM_FORMAT_ARGB8888,      1, { 4 }, 1, 1, true },
     { DRM_FORMAT_XBGR8888,      1, { 4 }, 1, 1, true },
     { DRM_FORMAT_ABGR8888,      1, { 4 }, 1, 1, true },
+    /* 10 bpc; the closed allocator has no XRGB2101010. */
+    { DRM_FORMAT_XBGR2101010,   1, { 4 }, 1, 1, true },
+    { DRM_FORMAT_ABGR2101010,   1, { 4 }, 1, 1, true },
+    { DRM_FORMAT_ARGB2101010,   1, { 4 }, 1, 1, true },
+    { DRM_FORMAT_RGBA1010102,   1, { 4 }, 1, 1, true },
+    { DRM_FORMAT_BGRA1010102,   1, { 4 }, 1, 1, true },
     { DRM_FORMAT_ABGR16161616F, 1, { 8 }, 1, 1, true },
     { DRM_FORMAT_XBGR16161616F, 1, { 8 }, 1, 1, true },
     { DRM_FORMAT_RGB565,        1, { 2 }, 1, 1, true },
+    { DRM_FORMAT_BGR565,        1, { 2 }, 1, 1, true },
     { DRM_FORMAT_R8,            1, { 1 }, 1, 1, true },
-    { DRM_FORMAT_GR88,          1, { 2 }, 1, 1, false },
+    { DRM_FORMAT_GR88,          1, { 2 }, 1, 1, true },
     { DRM_FORMAT_NV12,          2, { 1, 2 }, 2, 2, true },
+    { DRM_FORMAT_NV21,          2, { 1, 2 }, 2, 2, true },
+    { DRM_FORMAT_NV16,          2, { 1, 2 }, 2, 1, true },
+    { DRM_FORMAT_NV61,          2, { 1, 2 }, 2, 1, true },
+    { DRM_FORMAT_YUV410,        3, { 1, 1, 1 }, 4, 4, true },
+    { DRM_FORMAT_YVU410,        3, { 1, 1, 1 }, 4, 4, true },
+    { DRM_FORMAT_YUV411,        3, { 1, 1, 1 }, 4, 1, true },
+    { DRM_FORMAT_YVU411,        3, { 1, 1, 1 }, 4, 1, true },
+    { DRM_FORMAT_YUV420,        3, { 1, 1, 1 }, 2, 2, true },
+    { DRM_FORMAT_YVU420,        3, { 1, 1, 1 }, 2, 2, true },
+    { DRM_FORMAT_YUV422,        3, { 1, 1, 1 }, 2, 1, true },
+    { DRM_FORMAT_YVU422,        3, { 1, 1, 1 }, 2, 1, true },
+    { DRM_FORMAT_YUV444,        3, { 1, 1, 1 }, 1, 1, true },
+    { DRM_FORMAT_YVU444,        3, { 1, 1, 1 }, 1, 1, true },
 };
 
 struct nv_gbm_handle_ref {
@@ -291,10 +311,11 @@ static uint32_t floor_log2(uint32_t v)
 }
 
 /* The GOB height the closed allocator picks: the tallest block that is not
- * taller than the surface, at most 16 GOBs (128 rows). */
+ * taller than the surface (one GOB for surfaces under 8 rows), at most 16
+ * GOBs (128 rows). */
 static uint32_t preferred_log2_gobs(uint32_t height)
 {
-    uint32_t h = floor_log2(DIV_ROUND_UP(height, NV_GOB_HEIGHT_ROWS));
+    uint32_t h = floor_log2(height / NV_GOB_HEIGHT_ROWS);
     return h > NV_PREFERRED_MAX_LOG2_GOBS ? NV_PREFERRED_MAX_LOG2_GOBS : h;
 }
 

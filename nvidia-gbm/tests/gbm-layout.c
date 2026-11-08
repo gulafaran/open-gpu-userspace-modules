@@ -126,8 +126,11 @@ int main(void)
     };
     static const uint32_t formats[] = {
         GBM_FORMAT_XRGB8888, GBM_FORMAT_ARGB8888, GBM_FORMAT_ABGR16161616F,
-        GBM_FORMAT_XRGB2101010, GBM_FORMAT_RGB565, GBM_FORMAT_R8,
-        DRM_FORMAT_NV12, DRM_FORMAT_P010,
+        GBM_FORMAT_XRGB2101010, GBM_FORMAT_XBGR2101010, GBM_FORMAT_ABGR2101010,
+        GBM_FORMAT_ARGB2101010, DRM_FORMAT_RGBA1010102, DRM_FORMAT_BGRA1010102,
+        GBM_FORMAT_RGB565, GBM_FORMAT_BGR565, GBM_FORMAT_R8, GBM_FORMAT_GR88,
+        DRM_FORMAT_NV12, DRM_FORMAT_NV21, DRM_FORMAT_NV16, DRM_FORMAT_YUV420,
+        DRM_FORMAT_YVU444, DRM_FORMAT_P010,
     };
 
     printf("\n# format support (render / scanout)\n");
@@ -209,6 +212,9 @@ int main(void)
         try_bo(gbm, "all-render", 1920, 1080, DRM_FORMAT_NV12, GBM_BO_USE_RENDERING, all, nall);
         try_bo(gbm, "all-render", 1920, 1080, GBM_FORMAT_ABGR16161616F, GBM_BO_USE_RENDERING, all, nall);
         try_bo(gbm, "all-render", 1920, 1080, GBM_FORMAT_RGB565, GBM_BO_USE_RENDERING, all, nall);
+        try_bo(gbm, "all-render", 1920, 1080, GBM_FORMAT_XBGR2101010, GBM_BO_USE_RENDERING, all, nall);
+        try_bo(gbm, "all-scanout", 1920, 1080, GBM_FORMAT_XBGR2101010,
+               GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING, all, nall);
     }
 
     gbm_device_destroy(gbm);

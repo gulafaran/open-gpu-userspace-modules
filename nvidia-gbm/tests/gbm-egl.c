@@ -233,6 +233,19 @@ int main(void)
     test_bo(dpy, fd, gbm, "render", 1920, 1080, GBM_FORMAT_ABGR8888,
             GBM_BO_USE_RENDERING, NULL, 0);
 
+    /* 10 bpc, as HDR compositors allocate their swapchains. RGBA1010102 and
+     * BGRA1010102 are allocated too, but NVIDIA's GL can't render to them
+     * (incomplete attachment, with the closed allocator's BOs as well). */
+    static const uint32_t formats_10bpc[] = {
+        GBM_FORMAT_XBGR2101010, GBM_FORMAT_ABGR2101010, GBM_FORMAT_ARGB2101010,
+    };
+    for (unsigned f = 0; f < sizeof(formats_10bpc) / sizeof(formats_10bpc[0]); f++) {
+        test_bo(dpy, fd, gbm, "render", 1920, 1080, formats_10bpc[f],
+                GBM_BO_USE_RENDERING, NULL, 0);
+        test_bo(dpy, fd, gbm, "scanout", 1920, 1080, formats_10bpc[f],
+                GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING, NULL, 0);
+    }
+
     /* Every GOB height, compressed and not, as explicit single modifiers.
      * The kind values come from a render (compressed) and a scanout BO. */
     struct gbm_bo *ref = gbm_bo_create(gbm, 64, 64, GBM_FORMAT_XRGB8888,
