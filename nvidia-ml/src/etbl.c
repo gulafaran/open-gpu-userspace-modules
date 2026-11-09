@@ -21,6 +21,9 @@
 nvmlReturn_t nvml_bus_id_for_index(unsigned index, char *busId, unsigned length);
 nvmlReturn_t nvml_gpu_part_number(nvmlDevice_t device, char *buf, unsigned length);
 nvmlReturn_t nvml_host_max_link_gen(nvmlDevice_t device, unsigned *gen);
+nvmlReturn_t nvml_etbl_compute_procs(nvmlDevice_t, unsigned *, void *, void *, void *);
+nvmlReturn_t nvml_etbl_mps_procs(nvmlDevice_t, unsigned *, void *, void *, void *);
+nvmlReturn_t nvml_etbl_graphics_procs(nvmlDevice_t, unsigned *, void *, void *, void *);
 
 /* 26: nvidia-smi passes every line it prints, for NVML's debug log. */
 static nvmlReturn_t trace_log_printf(const char *fmt, ...)
@@ -83,6 +86,9 @@ static const struct {
         SLOT(81, nvml_bus_id_for_index),
         SLOT(108, nvmlDeviceGetEnforcedPowerLimit),
         SLOT(149, nvmlDeviceGetBoardPartNumber),
+        SLOT(213, nvml_etbl_compute_procs),
+        SLOT(214, nvml_etbl_mps_procs),
+        SLOT(215, nvml_etbl_graphics_procs),
         SLOT(230, nvml_host_max_link_gen),
         SLOT(231, nvml_gpu_part_number),
         SLOT(237, fru_part_number),

@@ -49,6 +49,7 @@ src/common/sdk/nvidia/inc/class/clca6f.h
 src/common/sdk/nvidia/inc/class/clcab5.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000base.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000client.h
+src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000gpuacct.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000gpu.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000system.h
 src/common/sdk/nvidia/inc/ctrl/ctrl0000/ctrl0000unix.h
@@ -67,8 +68,10 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080event.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080fb.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gpu.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gr.h
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080gsp.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080mc.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080nvlink_common.h
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080nvlink.h
 src/common/sdk/nvidia/inc/ctrl/ctrl906f.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fbase.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h

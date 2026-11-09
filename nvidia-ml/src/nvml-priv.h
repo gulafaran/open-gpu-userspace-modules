@@ -35,6 +35,7 @@ struct nvmlDevice_st {
 
     struct nvc_rm rm;
     NvHandle device, subdevice, rusd_obj;
+    NvHandle display;           /* NV04_DISPLAY_COMMON, lazily (lock) */
     NV00DE_SHARED_DATA *rusd;   /* NULL if RUSD isn't available */
 
     /* Static information, filled in at open. */
@@ -49,6 +50,8 @@ struct nvmlDevice_st {
     NvU32 brand;                /* nvmlBrandType_t */
     NvU32 link_caps, root_link_caps;   /* NV2080_CTRL_BUS_INFO_PCIE_*_LINK_CAPS */
     NvU64 fb_total;             /* bytes */
+    bool classes_known;         /* gfx_class/compute_class looked up (lock) */
+    NvU32 gfx_class, compute_class;
 
     pthread_mutex_t lock;
 };

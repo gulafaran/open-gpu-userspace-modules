@@ -7,6 +7,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "nvml-priv.h"
 
@@ -446,5 +447,44 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetComputeMode(nvmlDevice_t device, nvmlCompu
     case NV2080_CTRL_GPU_COMPUTE_MODE_RULES_EXCLUSIVE_COMPUTE_PROCESS: *mode = NVML_COMPUTEMODE_EXCLUSIVE_PROCESS; break;
     default:                                                          *mode = NVML_COMPUTEMODE_EXCLUSIVE_THREAD; break;
     }
+    return NVML_SUCCESS;
+}
+
+/* ---- PCIe throughput -----------------------------------------------------------
+ * RM counts bytes per direction; sample over 20 ms like the closed library. */
+
+#define PCIE_SAMPLE_MS 20
+
+static bool pex_counter(struct nvmlDevice_st *dev, unsigned bit, NvU32 *value)
+{
+    NV2080_CTRL_BUS_GET_PEX_UTIL_COUNTERS_PARAMS p = { .pexCounterMask = 1u << bit };
+    if (nvml_ctrl_sub(dev, NV2080_CTRL_CMD_BUS_GET_PEX_UTIL_COUNTERS, &p, sizeof(p)) != NV_OK)
+        return false;
+    *value = p.pexCounters[bit];
+    return true;
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetPcieThroughput(nvmlDevice_t device, nvmlPcieUtilCounter_t counter,
+                                                     unsigned int *value)
+{
+    struct timespec t0, t1, wait = { 0, PCIE_SAMPLE_MS * 1000000L };
+    unsigned bit;
+    NvU32 c0, c1;
+    DEVICE(device, dev);
+    CHECK_PTR(value);
+    switch (counter) {
+    case NVML_PCIE_UTIL_TX_BYTES: bit = 0; break;   /* NV2080_CTRL_BUS_PEX_UTIL_COUNTER_TX_BYTES */
+    case NVML_PCIE_UTIL_RX_BYTES: bit = 1; break;   /* ..._RX_BYTES */
+    default: return NVML_ERROR_INVALID_ARGUMENT;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t0);
+    if (!pex_counter(dev, bit, &c0))
+        return NVML_ERROR_NOT_SUPPORTED;
+    nanosleep(&wait, NULL);
+    if (!pex_counter(dev, bit, &c1))
+        return NVML_ERROR_NOT_SUPPORTED;
+    clock_gettime(CLOCK_MONOTONIC, &t1);
+    double s = (t1.tv_sec - t0.tv_sec) + (t1.tv_nsec - t0.tv_nsec) / 1e9;
+    *value = (unsigned)((NvU32)(c1 - c0) / s / 1024.0);   /* KB/s */
     return NVML_SUCCESS;
 }
