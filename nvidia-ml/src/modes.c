@@ -199,3 +199,13 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceIsMigDeviceHandle(nvmlDevice_t device, unsign
     *isMigDevice = 0;
     return NVML_SUCCESS;
 }
+
+/* No MIG mode to report; NULL pointers are an argument error first. */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetMigMode(nvmlDevice_t device, unsigned int *currentMode,
+                                              unsigned int *pendingMode)
+{
+    DEVICE(device, dev);
+    CHECK_PTR(currentMode);
+    CHECK_PTR(pendingMode);
+    return NVML_ERROR_NOT_SUPPORTED;
+}

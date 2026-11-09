@@ -574,17 +574,17 @@ NVML_EXPORT nvmlReturn_t nvmlSystemGetProcessName(unsigned int pid, char *name, 
         return NVML_ERROR_UNINITIALIZED;
     if (name == NULL || length == 0)
         return NVML_ERROR_INVALID_ARGUMENT;
-    snprintf(path, sizeof(path), "/proc/%u/exe", pid);
-    n = readlink(path, buf, sizeof(buf) - 1);
-    if (n < 0) {
-        /* Not ours to read (another user): fall back to comm. */
-        FILE *f;
-        snprintf(path, sizeof(path), "/proc/%u/comm", pid);
-        if ((f = fopen(path, "r")) == NULL)
-            return NVML_ERROR_NOT_FOUND;
-        n = fgets(buf, sizeof(buf), f) ? (ssize_t)strcspn(buf, "\n") : 0;
-        fclose(f);
-    }
+    /* argv[0], as the closed library reports it; readable even for
+     * processes whose exe link isn't (kwin_wayland). Kernel threads and
+     * zombies have an empty command line. */
+    FILE *f;
+    snprintf(path, sizeof(path), "/proc/%u/cmdline", pid);
+    if ((f = fopen(path, "r")) == NULL)
+        return NVML_ERROR_NOT_FOUND;
+    n = (ssize_t)fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n <= 0 || buf[0] == 0)
+        return NVML_ERROR_NO_DATA;
     buf[n] = 0;
     /* The closed library truncates instead of failing. */
     snprintf(name, length, "%s", buf);

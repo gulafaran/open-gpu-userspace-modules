@@ -241,7 +241,8 @@ struct etbl_eng_sample {
 
 struct etbl_util_sample {
     unsigned long long timestamp;   /* us, CPU (OS) time */
-    struct etbl_eng_sample fb, gr, nvenc, nvdec, nvjpg, nvofa;
+    /* nvidia-smi pmon's column order (sm, mem, ...), not RM's (fb first) */
+    struct etbl_eng_sample gr, fb, nvenc, nvdec, nvjpg, nvofa;
 };
 
 #include "ctrl/ctrl2080/ctrl2080gpumon.h"
@@ -257,24 +258,19 @@ static void convert_engine(struct etbl_eng_sample *o, const NV2080_CTRL_PERF_GPU
     snprintf(o->sub_name, sizeof(o->sub_name), "%.*s", (int)sizeof(s->subProcessName), s->subProcessName);
 }
 
-nvmlReturn_t nvml_etbl_process_samples(nvmlDevice_t device, unsigned long long lastSeen,
-                                       nvmlValueType_t *type, unsigned *count, void *out)
-{
-    struct nvmlDevice_st *dev;
-    nvmlReturn_t ret = nvml_device(device, &dev);
-    if (ret != NVML_SUCCESS)
-        return ret;
-    if (type == NULL || count == NULL)
-        return NVML_ERROR_INVALID_ARGUMENT;
-    *type = NVML_VALUE_TYPE_UNSIGNED_INT;
-    /* GSP-RM only attributes samples to processes while per-process
-     * utilization is polled; ask for it from the first query on. */
-    nvml_rusd_request(dev, NV00DE_RUSD_POLL_PROC_UTIL);
-    if (out == NULL) {
-        *count = NV2080_CTRL_PERF_GPUMON_SAMPLE_COUNT_PERFMON_UTIL;
-        return NVML_SUCCESS;
-    }
+#define GPUMON_SAMPLES NV2080_CTRL_PERF_GPUMON_SAMPLE_COUNT_PERFMON_UTIL
 
+/*
+ * The samples newer than lastSeen that are attributed to a process, oldest
+ * first, with their CPU timestamps (us). The closed library skips the rest
+ * too: samples taken while nobody polled per-process data name no process.
+ * Returns NOT_FOUND if there are none; free *params afterwards.
+ */
+static nvmlReturn_t gpumon_samples(struct nvmlDevice_st *dev, unsigned long long lastSeen,
+                                   NV2080_CTRL_PERF_GET_GPUMON_PERFMON_UTIL_SAMPLES_V2_PARAMS **params,
+                                   const NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE *samples[],
+                                   unsigned long long us[], unsigned *count)
+{
     NV2080_CTRL_TIMER_GET_GPU_CPU_TIME_CORRELATION_INFO_PARAMS tc = {
         .cpuClkId = NV2080_TIMER_GPU_CPU_TIME_CPU_CLK_ID_OSTIME,   /* us since the epoch */
         .sampleCount = 1,
@@ -292,28 +288,204 @@ nvmlReturn_t nvml_etbl_process_samples(nvmlDevice_t device, unsigned long long l
         return nvml_from_rm(st);
     }
 
-    /* Oldest first: the ring starts at the tracker once it has wrapped. */
-    const unsigned n = NV2080_CTRL_PERF_GPUMON_SAMPLE_COUNT_PERFMON_UTIL;
-    struct etbl_util_sample *o = out;
+    /* The ring starts at the tracker (a byte offset into samples[]) once
+     * it has wrapped. */
+    const unsigned first = p->tracker / sizeof(p->samples[0]);
     unsigned got = 0;
-    for (unsigned k = 0; k < n && got < *count; k++) {
-        const NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE *s = &p->samples[(p->tracker + k) % n];
-        if (s->base.timeStamp == 0)
+    for (unsigned k = 0; k < GPUMON_SAMPLES; k++) {
+        const NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE *s = &p->samples[(first + k) % GPUMON_SAMPLES];
+        if (s->base.timeStamp == 0 ||
+            (s->gr.procId == NV2080_GPUMON_PID_INVALID &&
+             s->fb.procId == NV2080_GPUMON_PID_INVALID))
             continue;
-        unsigned long long us = tc.samples[0].cpuTime +
+        unsigned long long t = tc.samples[0].cpuTime +
             (long long)(s->base.timeStamp - tc.samples[0].gpuTime) / 1000;
-        if (us <= lastSeen)
+        if (t <= lastSeen)
             continue;
-        o[got].timestamp = us;
-        convert_engine(&o[got].fb, &s->fb);
-        convert_engine(&o[got].gr, &s->gr);
-        convert_engine(&o[got].nvenc, &s->nvenc);
-        convert_engine(&o[got].nvdec, &s->nvdec);
-        convert_engine(&o[got].nvjpg, &s->nvjpg);
-        convert_engine(&o[got].nvofa, &s->nvofa);
+        samples[got] = s;
+        us[got] = t;
         got++;
     }
-    free(p);
+    if (got == 0) {
+        free(p);
+        return NVML_ERROR_NOT_FOUND;
+    }
+    *params = p;
     *count = got;
-    return got ? NVML_SUCCESS : NVML_ERROR_NOT_FOUND;
+    return NVML_SUCCESS;
+}
+
+nvmlReturn_t nvml_etbl_process_samples(nvmlDevice_t device, unsigned long long lastSeen,
+                                       nvmlValueType_t *type, unsigned *count, void *out)
+{
+    struct nvmlDevice_st *dev;
+    nvmlReturn_t ret = nvml_device(device, &dev);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    if (type == NULL || count == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    *type = NVML_VALUE_TYPE_UNSIGNED_INT;
+    /* GSP-RM only attributes samples to processes while per-process
+     * utilization is polled; ask for it from the first query on. */
+    nvml_rusd_request(dev, NV00DE_RUSD_POLL_PROC_UTIL);
+    if (out == NULL) {
+        *count = GPUMON_SAMPLES;
+        return NVML_SUCCESS;
+    }
+
+    NV2080_CTRL_PERF_GET_GPUMON_PERFMON_UTIL_SAMPLES_V2_PARAMS *p;
+    const NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE *s[GPUMON_SAMPLES];
+    unsigned long long us[GPUMON_SAMPLES];
+    unsigned n;
+    ret = gpumon_samples(dev, lastSeen, &p, s, us, &n);
+    if (ret != NVML_SUCCESS) {
+        *count = 0;
+        return ret;
+    }
+    struct etbl_util_sample *o = out;
+    if (n > *count)
+        n = *count;
+    for (unsigned i = 0; i < n; i++) {
+        o[i].timestamp = us[i];
+        convert_engine(&o[i].gr, &s[i]->gr);
+        convert_engine(&o[i].fb, &s[i]->fb);
+        convert_engine(&o[i].nvenc, &s[i]->nvenc);
+        convert_engine(&o[i].nvdec, &s[i]->nvdec);
+        convert_engine(&o[i].nvjpg, &s[i]->nvjpg);
+        convert_engine(&o[i].nvofa, &s[i]->nvofa);
+    }
+    free(p);
+    *count = n;
+    return NVML_SUCCESS;
+}
+
+/*
+ * Per-process utilization (public API): the samples above, folded per
+ * process. Each engine of a sample is credited to the process it names; a
+ * process's utilization is the sum of its credited samples over the number
+ * of samples, and its timestamp that of its newest credited sample. This
+ * follows the closed library to within a point or so, but not exactly:
+ * its arithmetic could not be pinned down from its inputs and outputs.
+ */
+struct proc_util {
+    unsigned pid;
+    unsigned long long timestamp;
+    unsigned long long eng[6];  /* sm, mem, enc, dec, jpg, ofa; pct*100 sums */
+};
+
+static nvmlReturn_t fold_process_samples(struct nvmlDevice_st *dev, unsigned long long lastSeen,
+                                         struct proc_util *out, unsigned *count, unsigned *nsamples)
+{
+    NV2080_CTRL_PERF_GET_GPUMON_PERFMON_UTIL_SAMPLES_V2_PARAMS *p;
+    const NV2080_CTRL_PERF_GPUMON_PERFMON_UTIL_SAMPLE *s[GPUMON_SAMPLES];
+    unsigned long long us[GPUMON_SAMPLES];
+    unsigned n, procs = 0;
+
+    nvml_rusd_request(dev, NV00DE_RUSD_POLL_PROC_UTIL);
+    nvmlReturn_t ret = gpumon_samples(dev, lastSeen, &p, s, us, &n);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    for (unsigned i = 0; i < n; i++) {
+        const NV2080_CTRL_PERF_GPUMON_ENGINE_UTIL_SAMPLE *e[6] = {
+            &s[i]->gr, &s[i]->fb, &s[i]->nvenc, &s[i]->nvdec, &s[i]->nvjpg, &s[i]->nvofa,
+        };
+        for (unsigned k = 0; k < 6; k++) {
+            unsigned pid = e[k]->procId, j;
+            if (pid == 0 || pid == NV2080_GPUMON_PID_INVALID)
+                continue;
+            for (j = 0; j < procs && out[j].pid != pid; j++)
+                ;
+            if (j == procs) {
+                if (procs == GPUMON_SAMPLES)
+                    continue;
+                memset(&out[j], 0, sizeof(out[j]));
+                out[j].pid = pid;
+                procs++;
+            }
+            out[j].eng[k] += e[k]->util;
+            if (us[i] > out[j].timestamp)
+                out[j].timestamp = us[i];
+        }
+    }
+    free(p);
+    *count = procs;
+    *nsamples = n;
+    return NVML_SUCCESS;
+}
+
+/* pct*100 sum over n samples -> whole percent */
+static unsigned avg_pct(unsigned long long sum, unsigned n)
+{
+    return (unsigned)(sum / 100 / n);
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetProcessUtilization(nvmlDevice_t device,
+                                                         nvmlProcessUtilizationSample_t *utilization,
+                                                         unsigned int *processSamplesCount,
+                                                         unsigned long long lastSeenTimeStamp)
+{
+    struct proc_util p[GPUMON_SAMPLES];
+    unsigned n, ns;
+    struct nvmlDevice_st *dev;
+    nvmlReturn_t ret = nvml_device(device, &dev);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    if (processSamplesCount == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    if (utilization == NULL || *processSamplesCount < GPUMON_SAMPLES) {
+        *processSamplesCount = GPUMON_SAMPLES;
+        return NVML_ERROR_INSUFFICIENT_SIZE;
+    }
+    ret = fold_process_samples(dev, lastSeenTimeStamp, p, &n, &ns);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    for (unsigned i = 0; i < n; i++) {
+        utilization[i] = (nvmlProcessUtilizationSample_t){
+            .pid = p[i].pid,
+            .timeStamp = p[i].timestamp,
+            .smUtil = avg_pct(p[i].eng[0], ns),
+            .memUtil = avg_pct(p[i].eng[1], ns),
+            .encUtil = avg_pct(p[i].eng[2], ns),
+            .decUtil = avg_pct(p[i].eng[3], ns),
+        };
+    }
+    *processSamplesCount = n;
+    return NVML_SUCCESS;
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetProcessesUtilizationInfo(nvmlDevice_t device,
+                                                               nvmlProcessesUtilizationInfo_t *procesesUtilInfo)
+{
+    struct proc_util p[GPUMON_SAMPLES];
+    nvmlProcessesUtilizationInfo_t *info = procesesUtilInfo;
+    unsigned n, ns;
+    struct nvmlDevice_st *dev;
+    nvmlReturn_t ret = nvml_device(device, &dev);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    if (info == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    if (info->version != nvmlProcessesUtilizationInfo_v1)
+        return NVML_ERROR_ARGUMENT_VERSION_MISMATCH;
+    if (info->procUtilArray == NULL || info->processSamplesCount < GPUMON_SAMPLES) {
+        info->processSamplesCount = GPUMON_SAMPLES;
+        return NVML_ERROR_INSUFFICIENT_SIZE;
+    }
+    ret = fold_process_samples(dev, info->lastSeenTimeStamp, p, &n, &ns);
+    if (ret != NVML_SUCCESS)
+        return ret;
+    for (unsigned i = 0; i < n; i++) {
+        info->procUtilArray[i] = (nvmlProcessUtilizationInfo_v1_t){
+            .pid = p[i].pid,
+            .timeStamp = p[i].timestamp,
+            .smUtil = avg_pct(p[i].eng[0], ns),
+            .memUtil = avg_pct(p[i].eng[1], ns),
+            .encUtil = avg_pct(p[i].eng[2], ns),
+            .decUtil = avg_pct(p[i].eng[3], ns),
+            .jpgUtil = avg_pct(p[i].eng[4], ns),
+            .ofaUtil = avg_pct(p[i].eng[5], ns),
+        };
+    }
+    info->processSamplesCount = n;
+    return NVML_SUCCESS;
 }
