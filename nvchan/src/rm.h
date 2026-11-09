@@ -88,6 +88,11 @@ NvU32 nvc_rm_unmap(struct nvc_rm *rm, NvHandle device, NvHandle memory,
 NvU32 nvc_rm_alloc_os_event(struct nvc_rm *rm, int fd);
 NvU32 nvc_rm_free_os_event(struct nvc_rm *rm, int fd);
 
+/* Takes the oldest event queued on an OS event fd (NV_ESC_RM_GET_EVENT_DATA):
+ * the event object, notifier index and info32/info16. *more is set if more
+ * events are queued. Returns an NV_STATUS; an empty queue is an error. */
+NvU32 nvc_rm_get_event_data(struct nvc_rm *rm, int fd, NvUnixEvent *event, NvU32 *more);
+
 NvU32 nvc_rm_map_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
                      NvHandle memory, NvU64 offset, NvU64 length, NvU32 flags,
                      NvU64 *dma_offset);

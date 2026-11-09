@@ -517,6 +517,18 @@ NvU32 nvc_rm_free_os_event(struct nvc_rm *rm, int fd)
     return ret ? os_status(ret) : p.Status;
 }
 
+NvU32 nvc_rm_get_event_data(struct nvc_rm *rm, int fd, NvUnixEvent *event, NvU32 *more)
+{
+    REQUIRE_OWNER(rm);
+
+    NVOS41_PARAMETERS p = { .pEvent = NV_PTR_TO_NvP64(event) };
+    int ret = nv_ioctl(fd, NV_ESC_RM_GET_EVENT_DATA, &p, sizeof(p));
+
+    if (more != NULL)
+        *more = p.MoreEvents;
+    return ret ? os_status(ret) : p.status;
+}
+
 NvU32 nvc_rm_map_dma(struct nvc_rm *rm, NvHandle device, NvHandle dma,
                      NvHandle memory, NvU64 offset, NvU64 length, NvU32 flags,
                      NvU64 *dma_offset)
