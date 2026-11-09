@@ -122,6 +122,19 @@ bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
     return false;
 }
 
+/* Adds categories to what GSP-RM polls for this device's RUSD object. */
+void nvml_rusd_request(struct nvmlDevice_st *dev, NvU64 mask)
+{
+    pthread_mutex_lock(&dev->lock);
+    if (dev->rusd_obj && (dev->rusd_mask & mask) != mask) {
+        NV00DE_CTRL_REQUEST_DATA_POLL_PARAMS p = { .polledDataMask = dev->rusd_mask | mask };
+        if (nvc_rm_control(&dev->rm, dev->rusd_obj, NV00DE_CTRL_CMD_REQUEST_DATA_POLL,
+                           &p, sizeof(p)) == NV_OK)
+            dev->rusd_mask = p.polledDataMask;
+    }
+    pthread_mutex_unlock(&dev->lock);
+}
+
 static void rusd_open(struct nvmlDevice_st *dev)
 {
     /* GSP-RM only updates the categories some RUSD object asked for. */
@@ -139,6 +152,7 @@ static void rusd_open(struct nvmlDevice_st *dev)
         dev->rusd_obj = 0;
         return;
     }
+    dev->rusd_mask = params.polledDataMask;
     if (nvc_rm_map(&dev->rm, dev->device, dev->rusd_obj, 0, sizeof(NV00DE_SHARED_DATA), &cpu,
                    DRF_DEF(OS33, _FLAGS, _ACCESS, _READ_ONLY)) != NV_OK)
         return;

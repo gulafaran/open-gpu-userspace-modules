@@ -37,6 +37,7 @@ struct nvmlDevice_st {
     NvHandle device, subdevice, rusd_obj;
     NvHandle display;           /* NV04_DISPLAY_COMMON, lazily (lock) */
     NV00DE_SHARED_DATA *rusd;   /* NULL if RUSD isn't available */
+    NvU64 rusd_mask;            /* NV00DE_RUSD_POLL_* requested (lock) */
 
     /* Static information, filled in at open. */
     char name[NVML_DEVICE_NAME_V2_BUFFER_SIZE];
@@ -82,6 +83,7 @@ NvU32 nvml_ctrl_dev(struct nvmlDevice_st *dev, NvU32 cmd, void *params, NvU32 si
  * field points at a struct starting with the volatile timestamp; data and
  * size describe the part after it. Returns false if the data isn't valid.
  */
+void nvml_rusd_request(struct nvmlDevice_st *dev, NvU64 mask);
 bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
                     void *src, void *dst, size_t size);
 
