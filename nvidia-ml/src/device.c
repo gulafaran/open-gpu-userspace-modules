@@ -178,6 +178,8 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetTemperature(nvmlDevice_t device,
     RUSD_TEMPERATURE t;
     DEVICE(device, dev);
     CHECK_PTR(temp);
+    if (sensor == NVML_TEMPERATURE_GPU_MAX)    /* no hotspot sensor in RUSD */
+        return NVML_ERROR_NOT_SUPPORTED;
     if (sensor != NVML_TEMPERATURE_GPU)
         return NVML_ERROR_INVALID_ARGUMENT;
     if (dev->rusd == NULL ||

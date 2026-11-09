@@ -55,6 +55,10 @@ struct nvmlDevice_st {
     NvU32 gfx_class, compute_class;
     bool coolers_known;         /* cooler_mask looked up (lock) */
     NvU32 cooler_mask;          /* fan coolers the board has */
+    bool policies_known;        /* thermal policy info looked up (lock) */
+    NvU32 policy_mask;          /* thermal policies the board has */
+    NvU8 policy_gps, policy_acoustic, policy_mem, policy_slowdown;  /* indexes */
+    NvS32 tlimit_ref;           /* slowdown policy's rated limit, 1/256 C; 0: none */
 
     pthread_mutex_t lock;
 };
@@ -93,6 +97,9 @@ bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
     ((dev)->rusd != NULL && \
      nvml_rusd_read((dev), &(dev)->rusd->field.lastModifiedTimestamp, \
                     (void *)&(dev)->rusd->field.info, (dst), sizeof(*(dst))))
+
+/* T.Limit field values (NVML_FI_DEV_TEMPERATURE_*_TLIMIT), thermal.c. */
+nvmlReturn_t nvml_tlimit_field(struct nvmlDevice_st *dev, unsigned field, int *value);
 
 /* Copies a string into a caller buffer, NVML-style. */
 nvmlReturn_t nvml_copy_string(char *dst, unsigned length, const char *src);

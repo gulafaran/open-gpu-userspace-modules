@@ -100,6 +100,17 @@ static void field_value(struct nvmlDevice_st *dev, nvmlFieldValue_t *v)
         }
         break;
     }
+    case NVML_FI_DEV_TEMPERATURE_SHUTDOWN_TLIMIT:
+    case NVML_FI_DEV_TEMPERATURE_SLOWDOWN_TLIMIT:
+    case NVML_FI_DEV_TEMPERATURE_MEM_MAX_TLIMIT:
+    case NVML_FI_DEV_TEMPERATURE_GPU_MAX_TLIMIT: {
+        int t;
+        v->valueType = NVML_VALUE_TYPE_SIGNED_INT;   /* set even when unsupported */
+        v->nvmlReturn = nvml_tlimit_field(dev, v->fieldId, &t);
+        if (v->nvmlReturn == NVML_SUCCESS)
+            v->value.siVal = t;
+        break;
+    }
     default:
         break;
     }
