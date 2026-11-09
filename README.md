@@ -29,9 +29,9 @@ files that sit next to the driver's.
 | `nvidia-ml` | **disabled** | `libnvidia-ml.so.1` | **yes**: `libnvidia-ml.so*` |
 
 Before enabling a conflicting module, remove the driver's copies of those
-files (on Gentoo: `INSTALL_MASK` in nvidia-drivers' `package.env`), or the
-package manager and `meson install` will overwrite each other. Do the same
-for the 32-bit driver libraries if you install the 32-bit build.
+files, or the package manager and `meson install` will overwrite each
+other. Do the same for the 32-bit driver libraries if you install the
+32-bit build.
 
 ## Requirements
 
@@ -91,8 +91,7 @@ layout as the driver. Mesa then uses it for nvidia-drm without
 `GBM_BACKEND`, and NVIDIA's EGL, GL and Vulkan libraries (which `dlopen`
 `libnvidia-allocator.so.1` for `GEMAddReference`/`GEMRemoveReference`) share
 its GEM handle table. There is no fallback to the driver's copy, so remove
-the driver's `libnvidia-allocator.so*` and `gbm/nvidia-drm_gbm.so` first
-(on Gentoo: `INSTALL_MASK` for nvidia-drivers).
+the driver's `libnvidia-allocator.so*` and `gbm/nvidia-drm_gbm.so` first.
 
 32-bit GL and Vulkan load the 32-bit library. nvchan is x86_64 only, so a
 32-bit build is the allocator alone:
