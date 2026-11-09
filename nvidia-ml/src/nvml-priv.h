@@ -64,6 +64,11 @@ struct nvmlDevice_st {
     NvU32 pstate_mask;          /* P-state board objects */
     int top_pstate;             /* object index of the fastest P-state; -1: none */
     int clk_index[NVML_CLOCK_COUNT];   /* clock domain object per nvmlClockType_t; -1 */
+    unsigned num_pclks;         /* P-states with clock ranges below */
+    struct { NvU32 mem, gpc_min, gpc_max; } pclk[32];   /* kHz, per P-state */
+    bool gpc_freqs_known;       /* gpc_freqs looked up (lock) */
+    unsigned num_gpc_freqs;
+    NvU16 gpc_freqs[512];       /* graphics clock frequency points, MHz, ascending */
     bool power_known;           /* power policy limits looked up (lock) */
     NvU32 power_min, power_default, power_max;   /* mW; 0: unsupported */
 
