@@ -31,6 +31,12 @@ struct nvchan_device {
 
     char name[NV2080_GPU_MAX_NAME_STRING_LENGTH];
 
+    /* Channels using the FIFO_EVENT_MTHD notifier. Arming it belongs to the
+     * subdevice (one per client), so the first channel arms it and the
+     * last disarms it, while its event object is still plugged in. */
+    pthread_mutex_t event_lock;
+    unsigned event_users;
+
     NvPushDeviceRec push;
 };
 

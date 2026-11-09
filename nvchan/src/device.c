@@ -232,6 +232,7 @@ static struct nvchan_device *device_open(int minor, NvU32 gpu_id,
         nvc_set_err(err, err_size, "out of memory");
         return NULL;
     }
+    pthread_mutex_init(&dev->event_lock, NULL);
 
     ret = nvc_rm_open(&dev->rm);
     if (ret == -EPROTO) {
@@ -352,6 +353,7 @@ fail:
 fail_free:
     if (dev->rm.ctl_fd >= 0 && dev->rm.client)
         nvc_rm_close(&dev->rm);
+    pthread_mutex_destroy(&dev->event_lock);
     free(dev);
     return NULL;
 }
@@ -380,6 +382,7 @@ void nvchan_device_close(struct nvchan_device *dev)
     if (dev->device)
         nvc_rm_free(&dev->rm, dev->rm.client, dev->device);
     nvc_rm_close(&dev->rm);   /* frees the client and everything under it */
+    pthread_mutex_destroy(&dev->event_lock);
     free(dev);
 }
 

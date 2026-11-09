@@ -221,6 +221,32 @@ void *nvchan_buffer_map(struct nvchan_buffer *buf)
  * between the semaphore check and poll() is not lost. Optional: without it
  * finish() polls with sleeps.
  */
+/*
+ * Counts a channel in or out of FIFO_EVENT_MTHD; the first arms it to
+ * repeat, the last disarms it. RM only takes SET_NOTIFICATION while an
+ * event object is plugged into the subdevice and arms only a disarmed
+ * notifier, so this runs after the channel's event is allocated and
+ * before it's freed.
+ */
+static NvU32 set_notification(struct nvchan_device *dev, bool on)
+{
+    NvU32 st = NV_OK;
+    pthread_mutex_lock(&dev->event_lock);
+    if (on ? dev->event_users == 0 : dev->event_users == 1) {
+        NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS p = {
+            .event = NV2080_NOTIFIERS_FIFO_EVENT_MTHD,
+            .action = on ? NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT
+                         : NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_DISABLE,
+        };
+        st = nvc_rm_control(&dev->rm, dev->subdevice, NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION,
+                            &p, sizeof(p));
+    }
+    if (st == NV_OK || !on)
+        dev->event_users += on ? 1 : -1;
+    pthread_mutex_unlock(&dev->event_lock);
+    return st;
+}
+
 static void init_events(struct nvchan_channel *ch)
 {
     struct nvc_rm *rm = &ch->dev->rm;
@@ -242,12 +268,7 @@ static void init_events(struct nvchan_channel *ch)
     if (nvc_rm_alloc(rm, ch->dev->subdevice, ch->event, NV01_EVENT_OS_EVENT, &ev) != NV_OK)
         goto fail_os_event;
 
-    NV2080_CTRL_EVENT_SET_NOTIFICATION_PARAMS arm = {
-        .event = notifier,
-        .action = NV2080_CTRL_EVENT_SET_NOTIFICATION_ACTION_REPEAT,
-    };
-    if (nvc_rm_control(rm, ch->dev->subdevice, NV2080_CTRL_CMD_EVENT_SET_NOTIFICATION,
-                       &arm, sizeof(arm)) != NV_OK)
+    if (set_notification(ch->dev, true) != NV_OK)
         goto fail_event;
     return;
 
@@ -267,6 +288,7 @@ static void fini_events(struct nvchan_channel *ch)
 
     if (ch->event_fd < 0)
         return;
+    set_notification(ch->dev, false);
     nvc_rm_free(rm, ch->dev->subdevice, ch->event);
     nvc_rm_free_os_event(rm, ch->event_fd);
     close(ch->event_fd);
