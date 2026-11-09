@@ -23,6 +23,7 @@
 #include "class/cl0000.h"          /* NV01_ROOT */
 #include "class/cl003e.h"          /* NV01_MEMORY_SYSTEM */
 #include "class/cl0071.h"          /* NV01_MEMORY_SYSTEM_OS_DESCRIPTOR */
+#include "ctrl/ctrl0000/ctrl0000client.h"
 
 /* Handles we generate; RM's own are in other ranges. */
 #define NVC_HANDLE_BASE 0xc1d00000u
@@ -421,6 +422,17 @@ NvU32 nvc_rm_map(struct nvc_rm *rm, NvHandle device, NvHandle memory,
     sysmem = is_sysmem(rm, memory);
     pthread_mutex_unlock(&rm->lock);
 
+    /* Memory we didn't allocate ourselves (e.g. RM_USER_SHARED_DATA): ask
+     * RM where it lives, as the RM API library does. */
+    if (!sysmem) {
+        NV0000_CTRL_CLIENT_GET_ADDR_SPACE_TYPE_PARAMS as = {
+            .hObject = memory, .mapFlags = flags,
+        };
+        if (nvc_rm_control(rm, rm->client, NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE,
+                           &as, sizeof(as)) == NV_OK)
+            sysmem = as.addrSpaceType == NV0000_CTRL_CMD_CLIENT_GET_ADDR_SPACE_TYPE_SYSMEM;
+    }
+
     p.fd = sysmem ? open_ctl() : open_gpu(rm->minor);
     if (p.fd < 0)
         return os_status(-errno);
@@ -431,7 +443,10 @@ NvU32 nvc_rm_map(struct nvc_rm *rm, NvHandle device, NvHandle memory,
         return ret ? os_status(ret) : p.params.status;
     }
 
-    void *ptr = mmap(NULL, length, PROT_READ | PROT_WRITE, MAP_SHARED, p.fd, 0);
+    /* Read-only RM memory (RM_USER_SHARED_DATA) can only be mapped so. */
+    int prot = DRF_VAL(OS33, _FLAGS, _ACCESS, flags) == NVOS33_FLAGS_ACCESS_READ_ONLY
+               ? PROT_READ : PROT_READ | PROT_WRITE;
+    void *ptr = mmap(NULL, length, prot, MAP_SHARED, p.fd, 0);
     struct nvc_rm_mapping *m = ptr != MAP_FAILED ? calloc(1, sizeof(*m)) : NULL;
 
     if (m == NULL) {
