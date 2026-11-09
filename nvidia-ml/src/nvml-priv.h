@@ -26,6 +26,7 @@
 #define NVML_EXPORT __attribute__((visibility("default")))
 
 #define NVML_MAX_DEVICES 32
+#define NVML_EVENT_TYPES 16      /* event type bits with an RM notifier, events.c */
 
 struct nvmlDevice_st {
     unsigned index;             /* NVML index, PCI bus order */
@@ -37,6 +38,7 @@ struct nvmlDevice_st {
     NvHandle device, subdevice, rusd_obj;
     NvHandle display;           /* NV04_DISPLAY_COMMON, lazily (lock) */
     NvHandle diag;              /* NV20_SUBDEVICE_DIAG, lazily (lock) */
+    unsigned event_refs[NVML_EVENT_TYPES];   /* event sets armed per type (lock) */
     NV00DE_SHARED_DATA *rusd;   /* NULL if RUSD isn't available */
     NvU64 rusd_mask;            /* NV00DE_RUSD_POLL_* requested (lock) */
 
