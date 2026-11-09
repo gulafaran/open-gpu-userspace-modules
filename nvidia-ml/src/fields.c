@@ -9,6 +9,7 @@
 #include "nvml-priv.h"
 
 #include "nvfixedtypes.h"
+#include "ctrl/ctrl2080/ctrl2080bus.h"
 
 #define DEVICE(handle, dev)                                   \
     struct nvmlDevice_st *dev;                                \
@@ -128,6 +129,25 @@ static void field_value(struct nvmlDevice_st *dev, nvmlFieldValue_t *v)
         v->nvmlReturn = nvml_tlimit_field(dev, v->fieldId, &t);
         if (v->nvmlReturn == NVML_SUCCESS)
             v->value.siVal = t;
+        break;
+    }
+    case NVML_FI_DEV_PCIE_REPLAY_ROLLOVER_COUNTER: {
+        unsigned u;
+        v->nvmlReturn = nvml_pex_counter(dev, NV2080_CTRL_BUS_PEX_COUNTER_REPLAY_ROLLOVER_COUNT, &u);
+        if (v->nvmlReturn == NVML_SUCCESS)
+            set_uint(v, u);
+        break;
+    }
+    case NVML_FI_DEV_GET_GPU_RECOVERY_ACTION:
+    case NVML_FI_DEV_RESET_STATUS:
+    case NVML_FI_DEV_DRAIN_AND_RESET_STATUS: {
+        unsigned u;
+        if (v->fieldId == NVML_FI_DEV_GET_GPU_RECOVERY_ACTION)
+            v->nvmlReturn = nvml_recovery_action(dev, &u);
+        else
+            v->nvmlReturn = nvml_reset_status(dev, v->fieldId == NVML_FI_DEV_DRAIN_AND_RESET_STATUS, &u);
+        if (v->nvmlReturn == NVML_SUCCESS)
+            set_uint(v, u);
         break;
     }
     default:

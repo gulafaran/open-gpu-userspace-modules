@@ -189,7 +189,7 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetGspFirmwareMode(nvmlDevice_t device, unsig
     return NVML_SUCCESS;
 }
 
-static nvmlReturn_t pex_counter16(struct nvmlDevice_st *dev, NvU32 bit, unsigned *value)
+nvmlReturn_t nvml_pex_counter(struct nvmlDevice_st *dev, NvU32 bit, unsigned *value)
 {
     NV2080_CTRL_BUS_GET_PEX_COUNTERS_PARAMS p = { .pexCounterMask = bit };
     NvU32 st = nvml_ctrl_sub(dev, NV2080_CTRL_CMD_BUS_GET_PEX_COUNTERS, &p, sizeof(p));
@@ -203,7 +203,7 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetPcieReplayCounter(nvmlDevice_t device, uns
 {
     DEVICE(device, dev);
     CHECK_PTR(value);
-    return pex_counter16(dev, NV2080_CTRL_BUS_PEX_COUNTER_REPLAY_COUNT, value);
+    return nvml_pex_counter(dev, NV2080_CTRL_BUS_PEX_COUNTER_REPLAY_COUNT, value);
 }
 
 NVML_EXPORT nvmlReturn_t nvmlDeviceGetEncoderStats(nvmlDevice_t device, unsigned int *sessionCount,

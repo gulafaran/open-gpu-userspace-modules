@@ -36,6 +36,7 @@ struct nvmlDevice_st {
     struct nvc_rm rm;
     NvHandle device, subdevice, rusd_obj;
     NvHandle display;           /* NV04_DISPLAY_COMMON, lazily (lock) */
+    NvHandle diag;              /* NV20_SUBDEVICE_DIAG, lazily (lock) */
     NV00DE_SHARED_DATA *rusd;   /* NULL if RUSD isn't available */
     NvU64 rusd_mask;            /* NV00DE_RUSD_POLL_* requested (lock) */
 
@@ -109,6 +110,13 @@ nvmlReturn_t nvml_tlimit_field(struct nvmlDevice_st *dev, unsigned field, int *v
 
 /* TGP power policy limits in mW (power.c). */
 nvmlReturn_t nvml_power_limits(struct nvmlDevice_st *dev, unsigned *min, unsigned *def, unsigned *max);
+
+/* GPU recovery action / reset (or drain) recommended, status.c. */
+nvmlReturn_t nvml_recovery_action(struct nvmlDevice_st *dev, unsigned *action);
+nvmlReturn_t nvml_reset_status(struct nvmlDevice_st *dev, bool drain, unsigned *value);
+
+/* One PCIe counter (NV2080_CTRL_BUS_PEX_COUNTER_* bit), info.c. */
+nvmlReturn_t nvml_pex_counter(struct nvmlDevice_st *dev, NvU32 bit, unsigned *value);
 
 /* Copies a string into a caller buffer, NVML-style. */
 nvmlReturn_t nvml_copy_string(char *dst, unsigned length, const char *src);

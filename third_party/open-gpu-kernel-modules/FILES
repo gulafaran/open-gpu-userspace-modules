@@ -29,6 +29,7 @@ src/common/sdk/nvidia/inc/class/cl0080_notification.h
 src/common/sdk/nvidia/inc/class/cl00de.h
 src/common/sdk/nvidia/inc/class/cl2080.h
 src/common/sdk/nvidia/inc/class/cl2080_notification.h
+src/common/sdk/nvidia/inc/class/cl208f.h
 src/common/sdk/nvidia/inc/class/cl50a0.h
 src/common/sdk/nvidia/inc/class/cl9010_callback.h
 src/common/sdk/nvidia/inc/class/cl9010.h
@@ -83,6 +84,8 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080pmumon.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080tmr.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080vfe.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080volt.h
+src/common/sdk/nvidia/inc/ctrl/ctrl208f/ctrl208fbase.h
+src/common/sdk/nvidia/inc/ctrl/ctrl208f/ctrl208fgpu.h
 src/common/sdk/nvidia/inc/ctrl/ctrl906f.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fbase.h
 src/common/sdk/nvidia/inc/ctrl/ctrla06f/ctrla06fgpfifo.h
