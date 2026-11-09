@@ -162,14 +162,15 @@ Current state:
   and maximum) and clock event reasons, P-states, temperature,
   temperature thresholds and margin, power draw and limits, fan count and
   RPM, PCIe link, running processes with their memory, per-process
-  utilization, field values, and the parts of NVIDIA's private export
-  table that `nvidia-smi` needs for its default view, `-q`, `--query-gpu`,
-  `dmon` and `pmon`.
-- Missing or partial: a number of `nvidia-smi -q` fields still show N/A
-  (application and supported clocks, violation counters, energy, remapped
-  rows, encoder capacity, ...), events, fan speed in percent, and every
-  function that changes a setting (fan control, power limit, clocks, ...);
-  those return `NVML_ERROR_NOT_SUPPORTED`.
+  utilization and utilization samples, violation counters, row remapping,
+  repair and recovery status, fabric and platform info, SRAM ECC,
+  accounting PIDs, addressing mode, CPU and memory affinity, field values,
+  and the parts of NVIDIA's private export table that `nvidia-smi` needs
+  for its default view, `-q`, `--query-gpu`, `dmon` and `pmon`.
+- Missing or partial: supported clocks, power and clock samples, energy,
+  encoder capacity, events, fan speed in percent, and every function that
+  changes a setting (fan control, power limit, clocks, ...); those return
+  `NVML_ERROR_NOT_SUPPORTED`.
 - Behaviour the GPU or driver doesn't support is reported the same way as
   the closed library does, but this is only verified on the tested GPU.
 
