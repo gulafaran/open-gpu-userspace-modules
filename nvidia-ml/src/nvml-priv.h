@@ -63,6 +63,8 @@ struct nvmlDevice_st {
     NvU32 pstate_mask;          /* P-state board objects */
     int top_pstate;             /* object index of the fastest P-state; -1: none */
     int clk_index[NVML_CLOCK_COUNT];   /* clock domain object per nvmlClockType_t; -1 */
+    bool power_known;           /* power policy limits looked up (lock) */
+    NvU32 power_min, power_default, power_max;   /* mW; 0: unsupported */
 
     pthread_mutex_t lock;
 };
@@ -104,6 +106,9 @@ bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
 
 /* T.Limit field values (NVML_FI_DEV_TEMPERATURE_*_TLIMIT), thermal.c. */
 nvmlReturn_t nvml_tlimit_field(struct nvmlDevice_st *dev, unsigned field, int *value);
+
+/* TGP power policy limits in mW (power.c). */
+nvmlReturn_t nvml_power_limits(struct nvmlDevice_st *dev, unsigned *min, unsigned *def, unsigned *max);
 
 /* Copies a string into a caller buffer, NVML-style. */
 nvmlReturn_t nvml_copy_string(char *dst, unsigned length, const char *src);

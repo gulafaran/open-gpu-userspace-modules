@@ -88,6 +88,25 @@ static void field_value(struct nvmlDevice_st *dev, nvmlFieldValue_t *v)
             set_uint(v, p.instGpuPower);
         break;
     }
+    case NVML_FI_DEV_POWER_MIN_LIMIT:
+    case NVML_FI_DEV_POWER_MAX_LIMIT:
+    case NVML_FI_DEV_POWER_DEFAULT_LIMIT: {
+        unsigned lim[3];
+        v->valueType = NVML_VALUE_TYPE_UNSIGNED_INT;   /* set even when unsupported */
+        if (v->scopeId != NVML_POWER_SCOPE_GPU)
+            break;
+        v->nvmlReturn = nvml_power_limits(dev, &lim[0], &lim[2], &lim[1]);
+        if (v->nvmlReturn == NVML_SUCCESS)
+            v->value.uiVal = lim[v->fieldId - NVML_FI_DEV_POWER_MIN_LIMIT];
+        break;
+    }
+    case NVML_FI_DEV_POWER_CURRENT_LIMIT: {
+        RUSD_POWER_LIMIT_INFO l;
+        v->valueType = NVML_VALUE_TYPE_UNSIGNED_INT;
+        if (v->scopeId == NVML_POWER_SCOPE_GPU && NVML_RUSD_READ(dev, powerLimitGpu, &l))
+            set_uint(v, l.enforcedmW);
+        break;
+    }
     case NVML_FI_DEV_GPU_TEMP: {
         RUSD_TEMPERATURE t;
         if (dev->rusd != NULL &&
