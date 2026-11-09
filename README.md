@@ -9,7 +9,7 @@ tree.
 
 | Directory | Replaces | Status |
 |-----------|----------|--------|
-| `nvidia-gbm/` | `nvidia-drm_gbm.so` (`libnvidia-allocator.so`) | bo_create, bo_import, bo_map, surfaces (via egl-gbm) |
+| `nvidia-gbm/` | `nvidia-drm_gbm.so` and, optionally, `libnvidia-allocator.so.1` | bo_create, bo_import, bo_map, surfaces (via egl-gbm); GEM handle refcounting for NVIDIA EGL/GL/Vulkan |
 | `nvchan/` | — (internal static library) | user-space GPU channels on `nvidia.ko`; copy engine, used by nvidia-gbm for block-linear CPU access |
 
 ## Requirements
@@ -58,6 +58,28 @@ set `GBM_BACKENDS_PATH`, for example
 
 EGL/GL keep loading `libnvidia-allocator.so.1` by name, so this only affects
 GBM users (compositors, Xwayland, browsers, and so on).
+
+## Replacing libnvidia-allocator.so.1
+
+With `-Dnvidia-allocator=enabled` the build installs
+`$libdir/libnvidia-allocator.so.1` instead of the GBM module, plus
+`gbm/nvidia-drm_gbm.so` and `gbm/nvidia-open_gbm.so` symlinks to it, the same
+layout as the driver. Mesa then uses it for nvidia-drm without
+`GBM_BACKEND`, and NVIDIA's EGL, GL and Vulkan libraries (which `dlopen`
+`libnvidia-allocator.so.1` for `GEMAddReference`/`GEMRemoveReference`) share
+its GEM handle table. There is no fallback to the driver's copy, so remove
+the driver's `libnvidia-allocator.so*` and `gbm/nvidia-drm_gbm.so` first
+(on Gentoo: `INSTALL_MASK` for nvidia-drivers).
+
+32-bit GL and Vulkan load the 32-bit library. nvchan is x86_64 only, so a
+32-bit build is the allocator alone:
+
+    CC="gcc -m32" PKG_CONFIG_LIBDIR=/usr/lib/pkgconfig \
+        meson setup build32 --prefix=/usr --libdir=lib \
+        -Dnvidia-allocator=enabled -Dnvidia-gbm=disabled -Dnvchan=disabled
+
+The driver's library also exports `NvRmShim*` functions; nothing in the
+desktop driver uses them, so they are not provided.
 
 The backend reports the name `nvidia` because `libnvidia-egl-gbm` only
 handles GBM devices with that backend name.

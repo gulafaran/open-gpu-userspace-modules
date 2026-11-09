@@ -1,5 +1,7 @@
 option('nvidia-gbm', type : 'feature', value : 'enabled',
        description : 'GBM backend for nvidia-drm')
+option('nvidia-allocator', type : 'feature', value : 'disabled',
+       description : 'Install libnvidia-allocator.so.1 in place of the driver\'s (GEM handle refcounts for NVIDIA EGL/GL/Vulkan) and make nvidia-gbm the nvidia-drm_gbm.so backend')
 option('nvchan', type : 'feature', value : 'enabled',
        description : 'GPU command submission library')
 option('kernel_src', type : 'string', value : '',

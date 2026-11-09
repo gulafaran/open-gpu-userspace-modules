@@ -16,11 +16,9 @@
  *                 rows   = height
  *   planes start and the BO ends on a 64 KiB boundary.
  *
- * GEM handles are per DRM file and not reference counted: importing a
- * dma-buf whose object already has a handle on this fd (one of our own BOs,
- * or the same client buffer twice) returns that same handle, and closing it
- * once invalidates it for everyone. The device therefore counts references
- * to each handle and only closes it when the last BO using it goes away.
+ * GEM handles are per DRM file and not reference counted, so every plane of
+ * a BO holds a reference in the process-wide table of gem_ref.c (shared
+ * with NVIDIA's EGL/GL/Vulkan when this is built as libnvidia-allocator).
  *
  * Every gbm_device_v0 entry point must be non-NULL because the loader calls
  * them without checking.
@@ -45,6 +43,7 @@
 
 #include "nvidia-drm/nv_drm_common_ioctl.h"
 #include "nvchan.h"
+#include "gem_ref.h"
 
 #define NV_GBM_EXPORT __attribute__((visibility("default")))
 
@@ -118,22 +117,14 @@ static const struct nv_gbm_format nv_gbm_formats[] = {
     { DRM_FORMAT_YVU444,        3, { 1, 1, 1 }, 1, 1, true },
 };
 
-struct nv_gbm_handle_ref {
-    uint32_t handle;
-    uint32_t refs;
-};
-
 struct nv_gbm_device {
     struct gbm_device base;
     struct drm_nvidia_get_dev_info_params info;
     bool compression;   /* we know the compressed kind for this generation */
     bool linear_render; /* the renderer can render to linear, see linear_allowed() */
 
-    /* Protects the handle table, and spans getting a handle from the kernel
-     * (import) or closing it, so a handle number can't be reused in between. */
+    /* Protects BO CPU mappings. */
     pthread_mutex_t lock;
-    struct nv_gbm_handle_ref *refs;
-    unsigned num_refs, max_refs;
 
     /* Copy engine channel for block-linear CPU access (nvchan), created on
      * first use. ce_lock serializes all work on it and BO imports into it. */
@@ -149,7 +140,7 @@ struct nv_gbm_bo {
     uint64_t size;
     const struct nv_gbm_format *fmt;  /* NULL for imports of unknown formats */
     unsigned num_planes;
-    /* One reference in the device's handle table per plane. */
+    /* One GEMAddReference per plane. */
     uint32_t handle[GBM_MAX_PLANES];
     uint32_t stride[GBM_MAX_PLANES];
     uint32_t offset[GBM_MAX_PLANES];
@@ -187,47 +178,42 @@ static inline struct nv_gbm_bo *nv_gbm_bo(struct gbm_bo *bo)
     return (struct nv_gbm_bo *)bo;
 }
 
-/* ---- GEM handle references (dev->lock held) -------------------------------- */
+/* ---- GEM handle references ---------------------------------------------- */
 
-static int handle_ref(struct nv_gbm_device *dev, uint32_t handle)
+static uint32_t import_existing(void *arg)
 {
-    for (unsigned i = 0; i < dev->num_refs; i++) {
-        if (dev->refs[i].handle == handle) {
-            dev->refs[i].refs++;
-            return 0;
-        }
-    }
-
-    if (dev->num_refs == dev->max_refs) {
-        unsigned max = dev->max_refs ? dev->max_refs * 2 : 64;
-        struct nv_gbm_handle_ref *refs = realloc(dev->refs, max * sizeof(*refs));
-        if (refs == NULL)
-            return -ENOMEM;
-        dev->refs = refs;
-        dev->max_refs = max;
-    }
-    dev->refs[dev->num_refs++] = (struct nv_gbm_handle_ref){ handle, 1 };
-    return 0;
+    return *(const uint32_t *)arg;
 }
 
-static void handle_unref(struct nv_gbm_device *dev, uint32_t handle)
+/* Takes one more reference on a handle the caller already holds one on. */
+static bool handle_ref_again(struct nv_gbm_device *dev, uint32_t handle)
 {
-    for (unsigned i = 0; i < dev->num_refs; i++) {
-        if (dev->refs[i].handle != handle)
-            continue;
-        if (--dev->refs[i].refs == 0) {
-            dev->refs[i] = dev->refs[--dev->num_refs];
-            drmCloseBufferHandle(dev->base.v0.fd, handle);
-        }
-        return;
-    }
+    return GEMAddReference(dev->base.v0.fd, import_existing, &handle) == handle;
 }
 
 static void bo_unref_handles(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
                              unsigned num)
 {
     for (unsigned p = 0; p < num; p++)
-        handle_unref(dev, bo->handle[p]);
+        GEMRemoveReference(dev->base.v0.fd, bo->handle[p]);
+}
+
+struct prime_import_args {
+    int fd;
+    int dmabuf;
+    int err;
+};
+
+static uint32_t prime_import(void *arg)
+{
+    struct prime_import_args *a = arg;
+    uint32_t handle = 0;
+
+    if (drmPrimeFDToHandle(a->fd, a->dmabuf, &handle) != 0) {
+        a->err = errno;
+        return 0;
+    }
+    return handle;
 }
 
 static uint32_t canonicalize_format(uint32_t format)
@@ -397,7 +383,6 @@ static void nv_gbm_destroy(struct gbm_device *gbm)
 
     /* Handles still referenced belong to leaked BOs; the fd owns them. */
     pthread_mutex_destroy(&dev->lock);
-    free(dev->refs);
     free(dev);
 }
 
@@ -460,36 +445,52 @@ static bool compute_layout(struct nv_gbm_bo *bo, uint32_t width, uint32_t height
     return true;
 }
 
+struct alloc_gem_args {
+    int fd;
+    struct drm_nvidia_gem_alloc_nvkms_memory_params p;
+    int err;
+};
+
+static uint32_t alloc_gem_import(void *arg)
+{
+    struct alloc_gem_args *a = arg;
+
+    if (drmIoctl(a->fd, DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY, &a->p) != 0) {
+        a->err = errno;
+        return 0;
+    }
+    return a->p.handle;
+}
+
 /* Allocates the memory and takes the plane references on its handle. */
 static int alloc_gem(struct nv_gbm_device *dev, struct nv_gbm_bo *bo,
                      bool scanout, bool *compressed)
 {
-    struct drm_nvidia_gem_alloc_nvkms_memory_params p = {
-        .block_linear = bo->modifier != DRM_FORMAT_MOD_LINEAR,
-        .compressible = *compressed,
-        .memory_size = bo->size,
-        .flags = scanout ? 0 : NV_GEM_ALLOC_NO_SCANOUT,
+    struct alloc_gem_args a = {
+        .fd = dev->base.v0.fd,
+        .p = {
+            .block_linear = bo->modifier != DRM_FORMAT_MOD_LINEAR,
+            .compressible = *compressed,
+            .memory_size = bo->size,
+            .flags = scanout ? 0 : NV_GEM_ALLOC_NO_SCANOUT,
+        },
+        .err = ENOMEM,
     };
 
-    if (drmIoctl(dev->base.v0.fd, DRM_IOCTL_NVIDIA_GEM_ALLOC_NVKMS_MEMORY, &p) != 0)
-        return -errno;
+    const uint32_t handle = GEMAddReference(a.fd, alloc_gem_import, &a);
+    if (handle == 0)
+        return -a.err;
+    bo->handle[0] = handle;
 
-    *compressed = p.compressible != 0;
-
-    pthread_mutex_lock(&dev->lock);
-    for (unsigned i = 0; i < bo->num_planes; i++) {
-        int ret = handle_ref(dev, p.handle);
-        if (ret != 0) {
-            if (i == 0)
-                drmCloseBufferHandle(dev->base.v0.fd, p.handle);
-            else
-                bo_unref_handles(dev, bo, i);
-            pthread_mutex_unlock(&dev->lock);
-            return ret;
+    for (unsigned i = 1; i < bo->num_planes; i++) {
+        if (!handle_ref_again(dev, handle)) {
+            bo_unref_handles(dev, bo, i);
+            return -ENOMEM;
         }
-        bo->handle[i] = p.handle;
+        bo->handle[i] = handle;
     }
-    pthread_mutex_unlock(&dev->lock);
+
+    *compressed = a.p.compressible != 0;
     return 0;
 }
 
@@ -585,9 +586,7 @@ static struct gbm_bo *nv_gbm_bo_create(struct gbm_device *gbm,
         for (unsigned i = 0; i < count && !ok; i++)
             ok = modifiers[i] == plain;
         if (!ok) {
-            pthread_mutex_lock(&dev->lock);
             bo_unref_handles(dev, bo, bo->num_planes);
-            pthread_mutex_unlock(&dev->lock);
             free(bo);
             errno = ENOMEM;
             return NULL;
@@ -744,33 +743,20 @@ static struct gbm_bo *nv_gbm_bo_import(struct gbm_device *gbm, uint32_t type,
     off_t size = lseek(fds[0], 0, SEEK_END);
     bo->size = size > 0 ? (uint64_t)size : 0;
 
-    pthread_mutex_lock(&dev->lock);
     for (unsigned p = 0; p < num_fds; p++) {
-        uint32_t handle = 0;
-        const bool got = drmPrimeFDToHandle(gbm->v0.fd, fds[p], &handle) == 0;
-        int ret = got ? handle_ref(dev, handle) : -errno;
+        struct prime_import_args a = { gbm->v0.fd, fds[p], ENOMEM };
+        const uint32_t handle = GEMAddReference(gbm->v0.fd, prime_import, &a);
 
-        if (ret != 0) {
-            /* A handle we got but couldn't count is ours to drop only if
-             * nobody else holds it. */
-            if (got) {
-                bool known = false;
-                for (unsigned i = 0; i < dev->num_refs && !known; i++)
-                    known = dev->refs[i].handle == handle;
-                if (!known)
-                    drmCloseBufferHandle(gbm->v0.fd, handle);
-            }
+        if (handle == 0) {
             bo_unref_handles(dev, bo, p);
-            pthread_mutex_unlock(&dev->lock);
             free(bo);
-            errno = -ret;
+            errno = a.err;
             return NULL;
         }
         bo->handle[p] = handle;
         bo->stride[p] = (uint32_t)strides[p];
         bo->offset[p] = (uint32_t)offsets[p];
     }
-    pthread_mutex_unlock(&dev->lock);
 
     bo->base.gbm = gbm;
     bo->base.v0.width = width;
@@ -1165,9 +1151,7 @@ static void nv_gbm_bo_destroy(struct gbm_bo *_bo)
         nvchan_buffer_destroy(bo->ce_buf);
         pthread_mutex_unlock(&dev->ce_lock);
     }
-    pthread_mutex_lock(&dev->lock);
     bo_unref_handles(dev, bo, bo->num_planes);
-    pthread_mutex_unlock(&dev->lock);
     free(bo);
 }
 
