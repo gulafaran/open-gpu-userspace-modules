@@ -53,6 +53,8 @@ struct nvmlDevice_st {
     NvU64 fb_total;             /* bytes */
     bool classes_known;         /* gfx_class/compute_class looked up (lock) */
     NvU32 gfx_class, compute_class;
+    bool coolers_known;         /* cooler_mask looked up (lock) */
+    NvU32 cooler_mask;          /* fan coolers the board has */
 
     pthread_mutex_t lock;
 };
