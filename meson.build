@@ -24,6 +24,13 @@ if get_option('nvidia-gbm').allowed() and not get_option('nvchan').allowed()
   error('nvidia-gbm needs nvchan (block-linear CPU access goes through the copy engine)')
 endif
 
+if get_option('nvidia-ml').allowed()
+  if not get_option('nvchan').allowed()
+    error('nvidia-ml needs nvchan (its RM API layer)')
+  endif
+  subdir('nvidia-ml')
+endif
+
 # The allocator alone (no GBM backend) is what a 32-bit build installs.
 if get_option('nvidia-gbm').allowed() or get_option('nvidia-allocator').enabled()
   subdir('nvidia-gbm')

@@ -1,0 +1,238 @@
+== nvmlInit_v2
+IO esc 0xd2 ret 0
+IO esc 0xd6 ret 0
+IO esc 0xc8 ret 0
+IO alloc class 0x0041 status 0x0
+IO ctrl 0x00000214 size 384 status 0x0 6us
+IO ctrl 0x0000021b size 12 status 0x0 3us
+IO ctrl 0x00000279 size 12 status 0x0 3us
+IO ctrl 0x00000289 size 4 status 0x0 2us
+IO esc 0xda ret 0
+IO ctrl 0x00000214 size 384 status 0x0 4us
+IO alloc class 0xc640 status 0x0
+   -> Success
+== nvmlSystemGetDriverVersion
+IO ctrl 0x00000101 size 40 status 0x0 10us
+   -> Success
+== nvmlSystemGetNVMLVersion
+   -> Success
+== nvmlSystemGetCudaDriverVersion_v2
+   -> Success
+== nvmlDeviceGetCount_v2
+   -> Success
+== nvmlDeviceGetHandleByIndex_v2
+IO ctrl 0x00000215 size 132 status 0x0 9us
+IO ctrl 0x00000202 size 40 status 0x0 7us
+IO ctrl 0x00000201 size 128 status 0x0 3us
+IO ctrl 0x00000202 size 40 status 0x0 3us
+IO esc 0xc9 ret 0
+IO esc 0xd7 ret 0
+IO ctrl 0x00000205 size 32 status 0x0 4us
+IO alloc class 0x0080 status 0x0
+IO ctrl 0x00800289 size 8 status 0x0 5us
+IO ctrl 0x00000202 size 40 status 0x0 4us
+IO ctrl 0x00000201 size 128 status 0x0 3us
+IO ctrl 0x00000202 size 40 status 0x0 3us
+IO esc 0xc9 ret 0
+IO alloc class 0x2080 status 0x0
+IO ctrl 0x20800406 size 264 status 0x0 21us
+IO ctrl 0x20800406 size 264 status 0x0 35us
+IO ctrl 0x20801701 size 16 status 0x0 3us
+IO ctrl 0x2080014a size 268 status 0x0 7us
+   -> Success
+== nvmlDeviceGetPciInfo_v3
+IO ctrl 0x20801802 size 16 status 0x0 7us
+IO ctrl 0x20801801 size 16 status 0x0 3us
+   -> Success
+== nvmlDeviceGetHandleByPciBusId_v2
+   -> Success
+== nvmlDeviceGetHandleByUUID
+IO ctrl 0x2080014a size 268 status 0x0 6us
+   -> Success
+== nvmlDeviceGetName
+IO ctrl 0x20800110 size 68 status 0x0 3us
+   -> Success
+== nvmlDeviceGetUUID
+   -> Success
+== nvmlDeviceGetIndex
+   -> Success
+== nvmlDeviceGetMinorNumber
+   -> Success
+== nvmlDeviceGetBrand
+IO ctrl 0x20800102 size 588 status 0x0 756us
+IO ctrl 0x0080028e size 1 status 0x0 9us
+IO ctrl 0x00800294 size 4 status 0x0 378us
+IO alloc class 0x2081 status 0x0
+IO ctrl 0x20810108 size 1376 status 0x0 196us
+   -> Success
+== nvmlDeviceGetArchitecture
+   -> Success
+== nvmlDeviceGetVbiosVersion
+IO ctrl 0x20800802 size 16 status 0x0 4us
+   -> Success
+== nvmlDeviceGetMemoryInfo
+IO ctrl 0x20801303 size 1028 status 0x0 10us
+IO ctrl 0x00003d0f size 4 status 0x0 5us
+IO ctrl 0x00003d0f size 4 status 0x0 3us
+   -> Success
+== nvmlDeviceGetMemoryInfo_v2
+IO ctrl 0x20801303 size 1028 status 0x0 5us
+IO ctrl 0x00003d0f size 4 status 0x0 3us
+   -> Success
+== nvmlDeviceGetBAR1MemoryInfo
+IO ctrl 0x20800102 size 588 status 0x0 470us
+IO alloc class 0x00de status 0x0
+IO ctrl 0x00000d01 size 12 status 0x0 4us
+IO esc 0x4e ret 0
+   -> Success
+== nvmlDeviceGetUtilizationRates
+IO ctrl 0x00de0001 size 8 status 0x0 7us
+IO ctrl 0x20809009 size 8 status 0x0 4us
+IO ctrl 0x20809064 size 520 status 0x0 794us
+IO ctrl 0x20809064 size 520 status 0x0 762us
+IO ctrl 0x20809064 size 520 status 0x0 125us
+IO ctrl 0x20809064 size 520 status 0x0 118us
+   -> Success
+== nvmlDeviceGetEncoderUtilization
+   -> Success
+== nvmlDeviceGetDecoderUtilization
+   -> Success
+== nvmlDeviceGetTemperature
+IO ctrl 0x00de0001 size 8 status 0x0 4us
+   -> Success
+== nvmlDeviceGetTemperatureThreshold
+IO ctrl 0x20808546 size 24 status 0x0 203us
+IO ctrl 0x20808546 size 24 status 0x56 110us
+IO ctrl 0x20808546 size 24 status 0x0 136us
+IO ctrl 0x20808546 size 24 status 0x0 126us
+IO ctrl 0x20808546 size 24 status 0x56 123us
+IO ctrl 0x20808546 size 24 status 0x56 123us
+IO ctrl 0x20808546 size 24 status 0x56 117us
+IO ctrl 0x20808546 size 24 status 0x56 116us
+IO ctrl 0x20808546 size 24 status 0x0 132us
+IO ctrl 0x20808546 size 24 status 0x56 124us
+IO ctrl 0x20808546 size 24 status 0x56 123us
+IO ctrl 0x20808546 size 24 status 0x56 126us
+   -> Success
+== nvmlDeviceGetTemperatureThreshold
+IO ctrl 0x20808546 size 24 status 0x0 124us
+   -> Success
+== nvmlDeviceGetClockInfo
+IO ctrl 0x00de0001 size 8 status 0x0 4us
+   -> Success
+== nvmlDeviceGetClockInfo
+   -> Success
+== nvmlDeviceGetClockInfo
+   -> Success
+== nvmlDeviceGetClockInfo
+   -> Success
+== nvmlDeviceGetMaxClockInfo
+IO ctrl 0x2080a0a7 size 17676 status 0x0 1153us
+IO ctrl 0x2080a060 size 28 status 0x0 4us
+IO ctrl 0x20809019 size 12336 status 0x0 708us
+IO ctrl 0x2080a0a8 size 32908 status 0x0 3216us
+   -> Success
+== nvmlDeviceGetMaxClockInfo
+IO ctrl 0x2080a0a8 size 32908 status 0x0 4592us
+IO ctrl 0x2080a06e size 12 status 0x0 180us
+   -> Success
+== nvmlDeviceGetClock
+   -> Success
+== nvmlDeviceGetPowerUsage
+IO ctrl 0x2080a618 size 20512 status 0x0 1103us
+IO ctrl 0x2080a612 size 54352 status 0x0 3846us
+IO ctrl 0x00de0001 size 8 status 0x0 15us
+   -> Success
+== nvmlDeviceGetTotalEnergyConsumption
+IO ctrl 0x2080a613 size 79936 status 0x0 12241us
+   -> Success
+== nvmlDeviceGetPowerManagementLimit
+IO ctrl 0x2080a61d size 12 status 0x56 3793us
+   -> Not Supported
+== nvmlDeviceGetEnforcedPowerLimit
+   -> Success
+== nvmlDeviceGetPowerManagementDefaultLimit
+   -> Success
+== nvmlDeviceGetPowerManagementLimitConstraints
+   -> Success
+== nvmlDeviceGetPowerState
+   -> Success
+== nvmlDeviceGetPerformanceState
+   -> Success
+== nvmlDeviceGetFanSpeed
+IO ctrl 0x2080852e size 1432 status 0x0 3us
+IO ctrl 0x2080852f size 844 status 0x56 261us
+   -> Not Supported
+== nvmlDeviceGetNumFans
+   -> Success
+== nvmlDeviceGetCurrentClocksEventReasons
+IO ctrl 0x2080a080 size 52 status 0x0 3us
+IO ctrl 0x2080a080 size 52 status 0x0 2us
+   -> Success
+== nvmlDeviceGetSupportedClocksEventReasons
+IO ctrl 0x2080a080 size 52 status 0x0 2us
+   -> Success
+== nvmlDeviceGetPcieThroughput
+IO ctrl 0x20801819 size 32 status 0x0 162us
+IO ctrl 0x20801819 size 32 status 0x0 1705us
+   -> Success
+== nvmlDeviceGetPcieThroughput
+IO ctrl 0x20801819 size 32 status 0x0 1700us
+IO ctrl 0x20801819 size 32 status 0x0 4573us
+   -> Success
+== nvmlDeviceGetCurrPcieLinkGeneration
+IO ctrl 0x00de0001 size 8 status 0x0 2409us
+   -> Success
+== nvmlDeviceGetCurrPcieLinkWidth
+IO ctrl 0x20801802 size 16 status 0x0 17us
+   -> Success
+== nvmlDeviceGetMaxPcieLinkGeneration
+   -> Success
+== nvmlDeviceGetMaxPcieLinkWidth
+IO ctrl 0x20801802 size 16 status 0x0 10us
+   -> Success
+== nvmlDeviceGetPersistenceMode
+   -> Success
+== nvmlDeviceGetDisplayMode
+IO alloc class 0x0073 status 0x0
+IO ctrl 0x00730107 size 12 status 0x0 7us
+IO ctrl 0x00730108 size 16 status 0x0 1751us
+   -> Success
+== nvmlDeviceGetDisplayActive
+IO ctrl 0x00730102 size 12 status 0x0 261us
+IO ctrl 0x0073010c size 20 status 0x0 162us
+IO ctrl 0x0073010c size 20 status 0x0 134us
+IO ctrl 0x0073010c size 20 status 0x0 148us
+IO ctrl 0x0073010c size 20 status 0x0 139us
+   -> Success
+== nvmlDeviceGetComputeMode
+IO ctrl 0x20800131 size 4 status 0x0 5us
+   -> Success
+== nvmlDeviceGetEccMode
+IO ctrl 0x2080014b size 5 status 0x0 1705us
+IO ctrl 0x20800157 size 0 status 0x56 279us
+IO ctrl 0x2080014b size 5 status 0x57 148us
+IO ctrl 0x2080014b size 5 status 0x57 126us
+IO ctrl 0x2080014b size 5 status 0x0 3235us
+IO ctrl 0x2080014b size 5 status 0x57 356us
+IO ctrl 0x20801357 size 4 status 0x56 133us
+   -> Not Supported
+== nvmlDeviceGetGraphicsRunningProcesses_v3
+IO ctrl 0x00800292 size 804 status 0x0 2us
+IO ctrl 0x00800292 size 804 status 0x0 2us
+IO ctrl 0x2080018d size 3812 status 0x0 222us
+IO ctrl 0x2080018e size 14408 status 0x0 221us
+   -> Success
+== nvmlDeviceGetComputeRunningProcesses_v3
+IO ctrl 0x2080018d size 3812 status 0x0 68us
+IO ctrl 0x2080018e size 14408 status 0x0 28us
+   -> Success
+== nvmlSystemGetProcessName
+   -> Success
+== nvmlShutdown
+IO free
+IO free
+IO free
+IO ctrl 0x00000216 size 128 status 0x0 3us
+IO free
+   -> Success

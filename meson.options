@@ -6,3 +6,5 @@ option('nvchan', type : 'feature', value : 'enabled',
        description : 'GPU command submission library')
 option('kernel_src', type : 'string', value : '',
        description : 'open-gpu-kernel-modules tree nvchan builds against (default: the copy in third_party/)')
+option('nvidia-ml', type : 'feature', value : 'disabled',
+       description : 'libnvidia-ml.so.1 (NVML) replacement')
