@@ -21,7 +21,7 @@ libnvidia_ml = shared_library('nvidia-ml',
                          nvchan_kernel_inc],
   # Deprecated NVML functions are implemented on purpose.
   c_args : nvchan_c_args + ['-Wno-deprecated-declarations'],
-  link_with : libnvchan,
+  link_with : libnvc_rm,
   dependencies : dependency('threads'),
   install : true)
 

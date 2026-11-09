@@ -30,10 +30,27 @@ foreach d : [
 endforeach
 nvchan_kernel_inc = include_directories(nvchan_kernel_dirs, is_system : true)
 
+nvcpu = host_machine.cpu_family() == 'x86' ? '-DNVCPU_X86' : '-DNVCPU_X86_64'
 nvchan_c_args = cc.get_supported_arguments([
-  '-DNVCPU_X86_64', '-DNV_LINUX', '-DNV_UNIX',
+  nvcpu, '-DNV_LINUX', '-DNV_UNIX',
   '-Wno-sign-compare', '-Wno-missing-field-initializers',
 ])
+
+# The RM API layer alone (nvidia-ml needs nothing else); RM's ioctl
+# structures are the same for 32-bit clients.
+libnvc_rm = static_library('nvc-rm',
+  'src/rm.c',
+  include_directories : nvchan_kernel_inc,
+  c_args : nvchan_c_args,
+  dependencies : dependency('threads'),
+  pic : true)
+
+if not get_option('nvchan').allowed()
+  subdir_done()
+endif
+if host_machine.cpu_family() != 'x86_64'
+  error('nvchan (channels, nvidia-push) is x86_64 only; disable it with -Dnvchan=disabled')
+endif
 
 # NVIDIA's code; warnings there are not ours to fix.
 nvidia_push = static_library('nvidia-push',
@@ -45,12 +62,11 @@ nvidia_push = static_library('nvidia-push',
   pic : true)
 
 libnvchan = static_library('nvchan',
-  'src/rm.c',
   'src/device.c',
   'src/ce.c',
   include_directories : [nvchan_kernel_inc, include_directories('include')],
   c_args : nvchan_c_args,
-  link_with : nvidia_push,
+  link_with : [nvidia_push, libnvc_rm],
   dependencies : dependency('threads'),
   pic : true)
 

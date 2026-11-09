@@ -15,8 +15,9 @@ add_project_arguments(cc.get_supported_arguments([
 # Shared uapi headers copied from the kernel module tree, see include/README.md.
 nv_uapi_inc = include_directories('include')
 
-# nvidia-gbm uses nvchan, so nvchan comes first.
-if get_option('nvchan').allowed()
+# nvidia-gbm and nvidia-ml use nvchan, so it comes first. nvidia-ml only
+# needs its RM API layer, which also builds for 32-bit x86.
+if get_option('nvchan').allowed() or get_option('nvidia-ml').allowed()
   subdir('nvchan')
 endif
 
@@ -25,9 +26,6 @@ if get_option('nvidia-gbm').allowed() and not get_option('nvchan').allowed()
 endif
 
 if get_option('nvidia-ml').allowed()
-  if not get_option('nvchan').allowed()
-    error('nvidia-ml needs nvchan (its RM API layer)')
-  endif
   subdir('nvidia-ml')
 endif
 
