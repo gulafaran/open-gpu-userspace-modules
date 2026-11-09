@@ -59,6 +59,10 @@ struct nvmlDevice_st {
     NvU32 policy_mask;          /* thermal policies the board has */
     NvU8 policy_gps, policy_acoustic, policy_mem, policy_slowdown;  /* indexes */
     NvS32 tlimit_ref;           /* slowdown policy's rated limit, 1/256 C; 0: none */
+    bool pstates_known;         /* P-state / clock domain info looked up (lock) */
+    NvU32 pstate_mask;          /* P-state board objects */
+    int top_pstate;             /* object index of the fastest P-state; -1: none */
+    int clk_index[NVML_CLOCK_COUNT];   /* clock domain object per nvmlClockType_t; -1 */
 
     pthread_mutex_t lock;
 };
