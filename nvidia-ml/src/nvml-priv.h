@@ -65,8 +65,9 @@ struct nvmlDevice_st {
     int top_pstate;             /* object index of the fastest P-state; -1: none */
     int clk_index[NVML_CLOCK_COUNT];   /* clock domain object per nvmlClockType_t; -1 */
     unsigned num_pclks;         /* P-states with clock ranges below */
-    struct { NvU32 mem, gpc_min, gpc_max; } pclk[32];   /* kHz, per P-state */
-    bool gpc_freqs_known;       /* gpc_freqs looked up (lock) */
+    struct { NvU8 pstate; NvU32 mem, gpc_min, gpc_max; } pclk[32];   /* Pn order; kHz */
+    bool clocks_known;          /* gpc_freqs, min_target_mhz looked up (lock) */
+    NvU32 min_target_mhz;       /* lowest graphics clock the NAFLL can target */
     unsigned num_gpc_freqs;
     NvU16 gpc_freqs[512];       /* graphics clock frequency points, MHz, ascending */
     bool power_known;           /* power policy limits looked up (lock) */
