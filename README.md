@@ -165,12 +165,17 @@ Current state:
   utilization and utilization samples, supported clocks, violation
   counters, row remapping, repair and recovery status, fabric and platform
   info, SRAM ECC, accounting PIDs, addressing mode, CPU and memory
-  affinity, field values, device events (event sets), and the parts of
-  NVIDIA's private export table that `nvidia-smi` needs for its default
-  view, `-q`, `--query-gpu`, `dmon` and `pmon`.
-- Missing or partial: power and clock samples, energy, encoder capacity,
-  system events and the newer event APIs (`nvmlEventSetWait_v3`, GPU
-  operational events), fan speed in percent, and every function that
+  affinity, field values, device events (event sets), per-P-state clock
+  ranges, performance mode strings, clock offset ranges, utilization by
+  clock domain, thermal sensor settings, energy, power source, encoder
+  capacity, encoder and frame buffer capture sessions, bus type, PCIe
+  speed, IRQ, core count, memory bus width, serial and board part number,
+  and the parts of NVIDIA's private export table that `nvidia-smi` needs
+  for its default view, `-q`, `--query-gpu`, `dmon` and `pmon`.
+- Missing or partial: power and clock samples, the current clock offsets,
+  PowerMizer mode, system events and the newer event APIs
+  (`nvmlEventSetWait_v3`, GPU operational events), fan speed in percent,
+  confidential computing state, topology queries, and every function that
   changes a setting (fan control, power limit, clocks, ...); those return
   `NVML_ERROR_NOT_SUPPORTED`.
 - Behaviour the GPU or driver doesn't support is reported the same way as
