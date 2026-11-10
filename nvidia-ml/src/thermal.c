@@ -38,6 +38,7 @@
 #include "nvml-priv.h"
 
 #include "nvstatus.h"
+#include "ctrl/ctrl2080/ctrl2080thermal.h"
 
 #define NV2080_CTRL_CMD_THERMAL_POLICY_GET_INFO                 0x2080852aU
 #define NV2080_CTRL_CMD_THERMAL_POLICY_GET_STATUS               0x2080852bU
@@ -257,5 +258,104 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetMarginTemperature(nvmlDevice_t device,
     memcpy(&margin, p + POLICY_STATUS_MARGIN, sizeof(margin));
     /* 1/256 C, rounded to the nearest degree */
     marginTempInfo->marginTemperature = margin >= 0 ? (margin + 128) >> 8 : -((-margin + 128) >> 8);
+    return NVML_SUCCESS;
+}
+
+/* ---- thermal sensors (NVAPI-style) ------------------------------------------- */
+
+static NvU32 thermal_execute(struct nvmlDevice_st *dev, NV2080_CTRL_THERMAL_SYSTEM_EXECUTE_V2_PARAMS *p,
+                             unsigned count)
+{
+    p->clientAPIVersion = THERMAL_SYSTEM_API_VER;
+    p->clientAPIRevision = THERMAL_SYSTEM_API_REV;
+    p->clientInstructionSizeOf = sizeof(p->instructionList[0]);
+    p->executeFlags = NV2080_CTRL_THERMAL_SYSTEM_EXECUTE_FLAGS_IGNORE_FAIL;
+    p->instructionListSize = count;
+    return nvml_ctrl_sub(dev, NV2080_CTRL_CMD_THERMAL_SYSTEM_EXECUTE_V2, p, sizeof(*p));
+}
+
+/*
+ * The thermal sensor table: for sensorIndex (or all with
+ * NVML_THERMAL_TARGET_ALL) the reading, its range, the sensor's provider
+ * (controller) and what it measures. RM's provider and target types are
+ * NVML's values.
+ *
+ * Like the closed library, an index past the last sensor still succeeds
+ * with the count; an index within NVML's array gets an entry of zeros with
+ * the first provider's and target's types.
+ */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetThermalSettings(nvmlDevice_t device, unsigned int sensorIndex,
+                                                      nvmlGpuThermalSettings_t *pThermalSettings)
+{
+    NV2080_CTRL_THERMAL_SYSTEM_EXECUTE_V2_PARAMS p;
+    NvU32 provider[NVML_MAX_THERMAL_SENSORS_PER_GPU] = { 0 }, target[NVML_MAX_THERMAL_SENSORS_PER_GPU] = { 0 };
+    DEVICE(device, dev);
+    if (pThermalSettings == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+
+    memset(&p, 0, sizeof(p));
+    p.instructionList[0].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_SENSORS_AVAILABLE_OPCODE;
+    NvU32 status = thermal_execute(dev, &p, 1);
+    if (status != NV_OK)
+        return nvml_from_rm(status);
+    pThermalSettings->count = p.instructionList[0].operands.getInfoSensorsAvailable.availableSensors;
+    if (pThermalSettings->count == 0)
+        return NVML_SUCCESS;
+
+    unsigned first = sensorIndex, end = sensorIndex + 1;
+    if (sensorIndex == NVML_THERMAL_TARGET_ALL) {
+        first = 0;
+        end = pThermalSettings->count;
+    }
+    if (end > NVML_MAX_THERMAL_SENSORS_PER_GPU)
+        end = NVML_MAX_THERMAL_SENSORS_PER_GPU;
+    if (first >= end)
+        return NVML_SUCCESS;
+
+    /* Per sensor: range, reading, provider index, target index. */
+    memset(&p, 0, sizeof(p));
+    unsigned n = 0;
+    for (unsigned i = first; i < end; i++) {
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_SENSOR_READING_RANGE_OPCODE;
+        p.instructionList[n++].operands.getInfoSensorReadingRange.sensorIndex = i;
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_STATUS_SENSOR_READING_OPCODE;
+        p.instructionList[n++].operands.getStatusSensorReading.sensorIndex = i;
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_SENSOR_PROVIDER_OPCODE;
+        p.instructionList[n++].operands.getInfoSensorProvider.sensorIndex = i;
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_SENSOR_TARGET_OPCODE;
+        p.instructionList[n++].operands.getInfoSensorTarget.sensorIndex = i;
+    }
+    if ((status = thermal_execute(dev, &p, n)) != NV_OK)
+        return nvml_from_rm(status);
+    n = 0;
+    for (unsigned i = first; i < end; i++) {
+        bool valid = i < pThermalSettings->count;
+        const NV2080_CTRL_THERMAL_SYSTEM_INSTRUCTION *in = &p.instructionList[n];
+        pThermalSettings->sensor[i].defaultMinTemp = valid ? in[0].operands.getInfoSensorReadingRange.minimum : 0;
+        pThermalSettings->sensor[i].defaultMaxTemp = valid ? in[0].operands.getInfoSensorReadingRange.maximum : 0;
+        pThermalSettings->sensor[i].currentTemp = valid ? in[1].operands.getStatusSensorReading.value : 0;
+        provider[i] = valid ? in[2].operands.getInfoSensorProvider.providerIndex : 0;
+        target[i] = valid ? in[3].operands.getInfoSensorTarget.targetIndex : 0;
+        n += 4;
+    }
+
+    /* The types behind the provider and target indexes. */
+    memset(&p, 0, sizeof(p));
+    n = 0;
+    for (unsigned i = first; i < end; i++) {
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_PROVIDER_TYPE_OPCODE;
+        p.instructionList[n++].operands.getInfoProviderType.providerIndex = provider[i];
+        p.instructionList[n].opcode = NV2080_CTRL_THERMAL_SYSTEM_GET_INFO_TARGET_TYPE_OPCODE;
+        p.instructionList[n++].operands.getInfoTargetType.targetIndex = target[i];
+    }
+    if ((status = thermal_execute(dev, &p, n)) != NV_OK)
+        return nvml_from_rm(status);
+    n = 0;
+    for (unsigned i = first; i < end; i++) {
+        pThermalSettings->sensor[i].controller =
+            (nvmlThermalController_t)p.instructionList[n++].operands.getInfoProviderType.type;
+        pThermalSettings->sensor[i].target =
+            (nvmlThermalTarget_t)p.instructionList[n++].operands.getInfoTargetType.type;
+    }
     return NVML_SUCCESS;
 }

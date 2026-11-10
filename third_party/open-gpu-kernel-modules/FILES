@@ -81,6 +81,7 @@ src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080nvlink_common.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080nvlink.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080perf.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080pmumon.h
+src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080thermal.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080tmr.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080vfe.h
 src/common/sdk/nvidia/inc/ctrl/ctrl2080/ctrl2080volt.h
