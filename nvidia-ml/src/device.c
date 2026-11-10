@@ -311,21 +311,31 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetEnforcedPowerLimit(nvmlDevice_t device, un
     return NVML_SUCCESS;
 }
 
+/* NV2080_CTRL_PERF_PSTATES_Pn is the bit 1 << n; 0 if RM doesn't know. */
+static bool current_pstate_bit(struct nvmlDevice_st *dev, NvU32 *p)
+{
+    return dev->rusd != NULL &&
+           nvml_rusd_read(dev, &dev->rusd->perfCurrentPstate.lastModifiedTimestamp,
+                          (void *)&dev->rusd->perfCurrentPstate.currentPstate, p, sizeof(*p));
+}
+
+bool nvml_current_pstate(struct nvmlDevice_st *dev, unsigned *pstate)
+{
+    NvU32 p;
+    if (!current_pstate_bit(dev, &p) || p == 0)
+        return false;
+    *pstate = (unsigned)__builtin_ctz(p);
+    return true;
+}
+
 NVML_EXPORT nvmlReturn_t nvmlDeviceGetPerformanceState(nvmlDevice_t device, nvmlPstates_t *pstate)
 {
     NvU32 p;
     DEVICE(device, dev);
     CHECK_PTR(pstate);
-    if (dev->rusd == NULL ||
-        !nvml_rusd_read(dev, &dev->rusd->perfCurrentPstate.lastModifiedTimestamp,
-                        (void *)&dev->rusd->perfCurrentPstate.currentPstate, &p, sizeof(p)))
+    if (!current_pstate_bit(dev, &p))
         return NVML_ERROR_NOT_SUPPORTED;
-    /* NV2080_CTRL_PERF_PSTATES_Pn is the bit 1 << n. */
-    if (p == 0) {
-        *pstate = NVML_PSTATE_UNKNOWN;
-        return NVML_SUCCESS;
-    }
-    *pstate = (nvmlPstates_t)__builtin_ctz(p);
+    *pstate = p == 0 ? NVML_PSTATE_UNKNOWN : (nvmlPstates_t)__builtin_ctz(p);
     return NVML_SUCCESS;
 }
 

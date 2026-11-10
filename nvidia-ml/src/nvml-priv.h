@@ -65,6 +65,7 @@ struct nvmlDevice_st {
     bool pstates_known;         /* P-state / clock domain info looked up (lock) */
     NvU32 pstate_mask;          /* P-state board objects */
     int top_pstate;             /* object index of the fastest P-state; -1: none */
+    signed char pstate_obj[16]; /* object index of Pn; -1: the board has no Pn */
     int clk_index[NVML_CLOCK_COUNT];   /* clock domain object per nvmlClockType_t; -1 */
     unsigned num_pclks;         /* P-states with clock ranges below */
     struct { NvU8 pstate; NvU32 mem, gpc_min, gpc_max; } pclk[32];   /* Pn order; kHz */
@@ -72,8 +73,13 @@ struct nvmlDevice_st {
     NvU32 min_target_mhz;       /* lowest graphics clock the NAFLL can target */
     unsigned num_gpc_freqs;
     NvU16 gpc_freqs[512];       /* graphics clock frequency points, MHz, ascending */
+    bool offsets_known;         /* clock offset ranges looked up (lock) */
+    struct { int index, min_khz, max_khz; } clk_offset[2];   /* graphics, memory; index -1: none */
     bool power_known;           /* power policy limits looked up (lock) */
     NvU32 power_min, power_default, power_max;   /* mW; 0: unsupported */
+    bool channels_known;        /* power channels looked up (lock) */
+    NvU32 power_channel_mask;   /* power monitor channels; 0: no power monitor */
+    NvU8 power_total_channel;   /* the total GPU power channel; 0xff: none */
 
     pthread_mutex_t lock;
 };
@@ -115,6 +121,9 @@ bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
 
 /* T.Limit field values (NVML_FI_DEV_TEMPERATURE_*_TLIMIT), thermal.c. */
 nvmlReturn_t nvml_tlimit_field(struct nvmlDevice_st *dev, unsigned field, int *value);
+
+/* The current P-state as Pn, from RUSD; false if unknown (device.c). */
+bool nvml_current_pstate(struct nvmlDevice_st *dev, unsigned *pstate);
 
 /* TGP power policy limits in mW (power.c). */
 nvmlReturn_t nvml_power_limits(struct nvmlDevice_st *dev, unsigned *min, unsigned *def, unsigned *max);
