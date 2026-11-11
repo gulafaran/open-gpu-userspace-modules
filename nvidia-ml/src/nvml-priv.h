@@ -38,6 +38,7 @@ struct nvmlDevice_st {
     NvHandle device, subdevice, rusd_obj;
     NvHandle display;           /* NV04_DISPLAY_COMMON, lazily (lock) */
     NvHandle diag;              /* NV20_SUBDEVICE_DIAG, lazily (lock) */
+    NvHandle inforom;           /* GF100_SUBDEVICE_INFOROM, lazily (lock) */
     unsigned event_refs[NVML_EVENT_TYPES];   /* event sets armed per type (lock) */
     NV00DE_SHARED_DATA *rusd;   /* NULL if RUSD isn't available */
     NvU64 rusd_mask;            /* NV00DE_RUSD_POLL_* requested (lock) */
@@ -80,6 +81,9 @@ struct nvmlDevice_st {
     bool channels_known;        /* power channels looked up (lock) */
     NvU32 power_channel_mask;   /* power monitor channels; 0: no power monitor */
     NvU8 power_total_channel;   /* the total GPU power channel; 0xff: none */
+    bool ecc_known;             /* ECC unit status looked up (lock) */
+    bool ecc_enabled;           /* an ECC unit is enabled */
+    NvU32 ecc_status;           /* RM status of that lookup */
 
     pthread_mutex_t lock;
 };
@@ -131,6 +135,14 @@ nvmlReturn_t nvml_power_limits(struct nvmlDevice_st *dev, unsigned *min, unsigne
 /* GPU recovery action / reset (or drain) recommended, status.c. */
 nvmlReturn_t nvml_recovery_action(struct nvmlDevice_st *dev, unsigned *action);
 nvmlReturn_t nvml_reset_status(struct nvmlDevice_st *dev, bool drain, unsigned *value);
+
+/* RM gpuId of a probed GPU by PCI address (NOT_FOUND if none), core.c. */
+nvmlReturn_t nvml_gpu_id_by_pci(unsigned domain, unsigned bus, unsigned slot, NvU32 *gpu_id);
+
+/* ECC error total and retired page field values (NVML_FI_DEV_RETIRED_*), ecc.c. */
+nvmlReturn_t nvml_ecc_total(struct nvmlDevice_st *dev, nvmlMemoryErrorType_t type,
+                            nvmlEccCounterType_t counter, unsigned long long *count);
+nvmlReturn_t nvml_retired_pages_field(struct nvmlDevice_st *dev, unsigned field, unsigned long long *value);
 
 /* One PCIe counter (NV2080_CTRL_BUS_PEX_COUNTER_* bit), info.c. */
 nvmlReturn_t nvml_pex_counter(struct nvmlDevice_st *dev, NvU32 bit, unsigned *value);

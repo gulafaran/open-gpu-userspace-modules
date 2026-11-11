@@ -17,10 +17,11 @@
 #include "nvml-priv.h"
 
 #include "nvstatus.h"
+#include "class/cl2080.h"
 #include "ctrl/ctrl0080/ctrl0080gpu.h"
 #include "ctrl/ctrl2080/ctrl2080gpu.h"
 
-enum proc_kind { PROC_GRAPHICS, PROC_COMPUTE, PROC_MPS_COMPUTE };
+enum proc_kind { PROC_GRAPHICS, PROC_COMPUTE, PROC_MPS_COMPUTE, PROC_ALL };
 
 /* What the lists report per process. */
 struct proc {
@@ -60,7 +61,9 @@ static int list_procs(struct nvmlDevice_st *dev, enum proc_kind kind, struct pro
 
     pthread_mutex_lock(&dev->lock);
     find_classes(dev);
-    cls = kind == PROC_GRAPHICS ? dev->gfx_class : dev->compute_class;
+    /* Every client of the GPU holds a subdevice, so its class lists them all. */
+    cls = kind == PROC_ALL ? NV20_SUBDEVICE_0
+        : kind == PROC_GRAPHICS ? dev->gfx_class : dev->compute_class;
     if (cls == 0) {
         pthread_mutex_unlock(&dev->lock);
         return 0;
@@ -154,6 +157,50 @@ static nvmlReturn_t list_v1(nvmlDevice_t device, unsigned *count, nvmlProcessInf
 PROC_FNS(Graphics, PROC_GRAPHICS)
 PROC_FNS(Compute, PROC_COMPUTE)
 PROC_FNS(MPSCompute, PROC_MPS_COMPUTE)
+
+/*
+ * Closed order: NULL list, version, mode. A too small array (or a NULL one
+ * with a non-zero capacity) is INSUFFICIENT_SIZE; the count is only updated
+ * when the array was given.
+ */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetRunningProcessDetailList(nvmlDevice_t device,
+                                                               nvmlProcessDetailList_t *plist)
+{
+    static const enum proc_kind kinds[NVML_PROCESS_MODE_MAX] = {
+        [NVML_PROCESS_MODE_COMPUTE] = PROC_COMPUTE,
+        [NVML_PROCESS_MODE_GRAPHICS] = PROC_GRAPHICS,
+        [NVML_PROCESS_MODE_MPS] = PROC_MPS_COMPUTE,
+        [NVML_PROCESS_MODE_ALL] = PROC_ALL,
+    };
+    struct proc procs[NV2080_CTRL_GPU_GET_PID_INFO_MAX_COUNT];
+    struct nvmlDevice_st *dev;
+    nvmlReturn_t ret = nvml_device(device, &dev);
+
+    if (ret != NVML_SUCCESS)
+        return ret;
+    if (plist == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    if (plist->version != nvmlProcessDetailList_v1)
+        return NVML_ERROR_ARGUMENT_VERSION_MISMATCH;
+    if (plist->mode >= NVML_PROCESS_MODE_MAX)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    int n = list_procs(dev, kinds[plist->mode], procs, NV2080_CTRL_GPU_GET_PID_INFO_MAX_COUNT);
+    if (n < 0)
+        return NVML_ERROR_UNKNOWN;
+    if (plist->procArray == NULL && plist->numProcArrayEntries != 0)
+        return NVML_ERROR_INSUFFICIENT_SIZE;
+    if ((unsigned)n > plist->numProcArrayEntries) {
+        plist->numProcArrayEntries = (unsigned)n;
+        return NVML_ERROR_INSUFFICIENT_SIZE;
+    }
+    plist->numProcArrayEntries = (unsigned)n;
+    for (int i = 0; i < n; i++)
+        plist->procArray[i] = (nvmlProcessDetail_v1_t){
+            .pid = procs[i].pid, .usedGpuMemory = procs[i].used,
+            .gpuInstanceId = 0xFFFFFFFF, .computeInstanceId = 0xFFFFFFFF,
+        };
+    return NVML_SUCCESS;
+}
 
 /*
  * Export table slots 213 (compute), 214 (MPS compute), 215 (graphics):

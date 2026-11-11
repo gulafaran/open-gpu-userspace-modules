@@ -801,3 +801,78 @@ NVML_EXPORT nvmlReturn_t nvmlDeviceGetAdaptiveClockInfoStatus(nvmlDevice_t devic
     *adaptiveClockStatus = p[1];
     return NVML_SUCCESS;
 }
+
+/* ---- clock policy queries without a consumer-board answer --------------------------- */
+
+/*
+ * The closed library keeps the PowerMizer mode in the process and never
+ * asks RM for it: a fresh process always sees adaptive, with adaptive,
+ * prefer-maximum-performance and auto supported. (It adds prefer-consistent
+ * on some Quadro/RTX boards, on a condition not known here.)
+ */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetPowerMizerMode_v1(nvmlDevice_t device,
+                                                        nvmlDevicePowerMizerModes_v1_t *powerMizerMode)
+{
+    DEVICE(device, dev);
+    (void)dev;
+    if (powerMizerMode == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    powerMizerMode->currentMode = NVML_POWER_MIZER_MODE_ADAPTIVE;
+    powerMizerMode->mode = NVML_POWER_MIZER_MODE_ADAPTIVE;
+    powerMizerMode->supportedPowerMizerModes = 1u << NVML_POWER_MIZER_MODE_ADAPTIVE |
+                                               1u << NVML_POWER_MIZER_MODE_PREFER_MAXIMUM_PERFORMANCE |
+                                               1u << NVML_POWER_MIZER_MODE_AUTO;
+    return NVML_SUCCESS;
+}
+
+/*
+ * Applications clocks, auto boost and the API restrictions are datacenter
+ * and workstation features (RM's locked-clocks status reports none of them
+ * here); the argument checks follow the closed library.
+ */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetApplicationsClock(nvmlDevice_t device, nvmlClockType_t clockType,
+                                                        unsigned int *clockMHz)
+{
+    DEVICE(device, dev);
+    (void)dev;
+    if (clockMHz == NULL || (unsigned)clockType >= NVML_CLOCK_COUNT)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    return NVML_ERROR_NOT_SUPPORTED;
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetDefaultApplicationsClock(nvmlDevice_t device, nvmlClockType_t clockType,
+                                                               unsigned int *clockMHz)
+{
+    return nvmlDeviceGetApplicationsClock(device, clockType, clockMHz);
+}
+
+/* RM's virtual P-state table has no max-customer-boost entry on this board. */
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetMaxCustomerBoostClock(nvmlDevice_t device, nvmlClockType_t clockType,
+                                                            unsigned int *clockMHz)
+{
+    DEVICE(device, dev);
+    (void)dev;
+    if (clockMHz == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    return NVML_ERROR_NOT_SUPPORTED;
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetAutoBoostedClocksEnabled(nvmlDevice_t device, nvmlEnableState_t *isEnabled,
+                                                               nvmlEnableState_t *defaultIsEnabled)
+{
+    DEVICE(device, dev);
+    (void)dev;
+    if (isEnabled == NULL)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    return NVML_ERROR_NOT_SUPPORTED;
+}
+
+NVML_EXPORT nvmlReturn_t nvmlDeviceGetAPIRestriction(nvmlDevice_t device, nvmlRestrictedAPI_t apiType,
+                                                     nvmlEnableState_t *isRestricted)
+{
+    DEVICE(device, dev);
+    (void)dev;
+    if (isRestricted == NULL || (unsigned)apiType >= NVML_RESTRICTED_API_COUNT)
+        return NVML_ERROR_INVALID_ARGUMENT;
+    return NVML_ERROR_NOT_SUPPORTED;
+}

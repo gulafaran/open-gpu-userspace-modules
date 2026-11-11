@@ -507,6 +507,17 @@ nvmlReturn_t nvml_bus_id_for_index(unsigned index, char *busId, unsigned length)
     return nvml_copy_string(busId, length, s);
 }
 
+/* RM gpuId of a probed GPU by PCI address, without opening it. */
+nvmlReturn_t nvml_gpu_id_by_pci(unsigned domain, unsigned bus, unsigned slot, NvU32 *gpu_id)
+{
+    for (unsigned i = 0; i < nvml.num_devices; i++)
+        if (probed[i].domain == domain && probed[i].bus == bus && probed[i].slot == slot) {
+            *gpu_id = probed[i].gpu_id;
+            return NVML_SUCCESS;
+        }
+    return NVML_ERROR_NOT_FOUND;
+}
+
 /* ---- system ----------------------------------------------------------------- */
 
 static nvmlReturn_t build_version(char *driver, size_t size)
