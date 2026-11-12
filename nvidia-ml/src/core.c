@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "nvml-priv.h"
@@ -104,10 +105,19 @@ nvmlReturn_t nvml_device(nvmlDevice_t handle, struct nvmlDevice_st **dev)
 
 /* ---- RUSD ------------------------------------------------------------------- */
 
+/*
+ * A GSP-RM poll update keeps a field in WRITE_IN_PROGRESS for up to ~160 us
+ * (every 500 ms), longer than a burst of undelayed retries lasts. Spin
+ * briefly, then back off with short sleeps for up to ~2 ms before giving up.
+ */
 bool nvml_rusd_read(struct nvmlDevice_st *dev, volatile NvU64 *timestamp,
                     void *src, void *dst, size_t size)
 {
-    for (int i = 0; i < 100; i++) {
+    const struct timespec backoff = { .tv_nsec = 50 * 1000 };
+
+    for (int i = 0; i < 100 + 40; i++) {
+        if (i >= 100)
+            nanosleep(&backoff, NULL);
         NvU64 t0 = __atomic_load_n(timestamp, __ATOMIC_ACQUIRE);
         if (t0 == RUSD_TIMESTAMP_INVALID)
             return false;
