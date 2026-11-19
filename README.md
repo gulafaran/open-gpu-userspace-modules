@@ -35,13 +35,13 @@ other. Do the same for the 32-bit driver libraries if you install the
 
 ## Requirements
 
-- NVIDIA open kernel modules **620.70.06** loaded with `nvidia-drm.modeset=1`.
+- NVIDIA open kernel modules **620.73.04** loaded with `nvidia-drm.modeset=1`.
   The version must match exactly (it's checked when a device is opened).
   The patched tree at
   [gulafaran/open-gpu-kernel-modules](https://github.com/gulafaran/open-gpu-kernel-modules)
   (`patches` branch) is recommended. Among other things it fixes CPU mmaps
   of large video-memory BOs and PRIME export of linear BOs to other GPUs.
-- The matching NVIDIA userspace driver (EGL/GL, `libnvidia-egl-gbm`) 620.70.06.
+- The matching NVIDIA userspace driver (EGL/GL, `libnvidia-egl-gbm`) 620.73.04.
 - Mesa >= 21.3 (`libgbm` and `gbm_backend_abi.h`), libdrm >= 2.4.110,
   meson >= 1.1 and a C11 compiler.
 
